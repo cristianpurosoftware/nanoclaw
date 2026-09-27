@@ -5,6 +5,11 @@ import { readEnvFile } from '../../../../src/env.js';
 import { queryHost } from '../../../../setup/lib/host-status.mjs';
 
 const MATTERMOST_ID = /^[a-z0-9]{26}$/;
+// Hand-edited installs may omit MATTERMOST_CALLBACK_SECRET; the adapter then
+// derives one from the bot token. The label and algorithm must match
+// resolveCallbackSecret in src/channels/mattermost-adapter/adapter.ts, which
+// is the source of truth.
+const DERIVED_CALLBACK_SECRET_LABEL = 'nanoclaw-mattermost-callback-secret:v1';
 
 type HostStatus = {
   channels: Array<{ connected: boolean; instance: string; type: string }>;
@@ -20,6 +25,13 @@ function required(env: Record<string, string>, key: string): string {
   const value = env[key];
   if (!value) throw new Error(`Mattermost runtime verification: ${key} is missing from .env`);
   return value;
+}
+
+function callbackSecret(env: Record<string, string>, token: string): string {
+  const explicit = env.MATTERMOST_CALLBACK_SECRET;
+  if (explicit?.trim()) return explicit;
+  if (!token.trim()) throw new Error('Mattermost runtime verification: MATTERMOST_BOT_TOKEN is missing from .env');
+  return createHmac('sha256', token).update(DERIVED_CALLBACK_SECRET_LABEL).digest('hex');
 }
 
 async function getJson(fetchImpl: typeof fetch, url: string, token: string): Promise<Record<string, unknown>> {
@@ -54,7 +66,7 @@ export async function verifyMattermostRuntime(
   );
   const baseUrl = required(env, 'MATTERMOST_BASE_URL').replace(/\/+$/, '');
   const token = required(env, 'MATTERMOST_BOT_TOKEN');
-  const secret = required(env, 'MATTERMOST_CALLBACK_SECRET');
+  const secret = callbackSecret(env, token);
   const callbackBase = required(env, 'MATTERMOST_CALLBACK_URL').replace(/\/+$/, '');
   const callbackUrl = callbackBase.includes('/webhook/') ? callbackBase : `${callbackBase}/webhook/mattermost`;
   for (const url of [baseUrl, callbackUrl]) {

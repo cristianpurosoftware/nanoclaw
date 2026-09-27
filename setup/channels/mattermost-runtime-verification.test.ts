@@ -27,9 +27,14 @@ async function fixture(
     listenerId?: string;
     dropCallback?: boolean;
     deleteStatus?: number;
+    /** Raw `.env` lines for the token and secret; defaults to an explicit secret. */
+    credentialLines?: string[];
+    /** The callback_token the running adapter accepts. */
+    acceptedSecret?: string;
   } = {},
 ) {
   const requests: string[] = [];
+  const callbackTokens: unknown[] = [];
   let baseUrl: string;
   let callbackReceived = false;
   const server = createServer(async (request, response) => {
@@ -56,7 +61,8 @@ async function fixture(
       let body = '';
       for await (const chunk of request) body += chunk;
       const payload = JSON.parse(body);
-      if (payload.context?.callback_token === 'test-secret') {
+      callbackTokens.push(payload.context?.callback_token);
+      if (payload.context?.callback_token === (overrides.acceptedSecret ?? 'test-secret')) {
         const runtime = {
           challenge: payload.context.nanoclaw_setup_probe,
           bot_id: BOT_ID,
@@ -90,8 +96,7 @@ async function fixture(
     join(root, '.env'),
     [
       `MATTERMOST_BASE_URL=http://127.0.0.1:${address.port}`,
-      'MATTERMOST_BOT_TOKEN=test-token',
-      'MATTERMOST_CALLBACK_SECRET=test-secret',
+      ...(overrides.credentialLines ?? ['MATTERMOST_BOT_TOKEN=test-token', 'MATTERMOST_CALLBACK_SECRET=test-secret']),
       `MATTERMOST_CALLBACK_URL=${baseUrl}`,
       `WEBHOOK_PORT=${address.port}`,
       '',
@@ -101,7 +106,7 @@ async function fixture(
     webhook: { id: 'test-listener', port: address.port, paths: ['/webhook/mattermost'] },
     channels: [{ connected: true, instance: 'mattermost', type: 'mattermost' }],
   });
-  return { connected, requests, root };
+  return { callbackTokens, connected, requests, root };
 }
 
 describe('Mattermost runtime verification', () => {
@@ -123,6 +128,35 @@ describe('Mattermost runtime verification', () => {
       'POST /webhook/mattermost',
       `DELETE /api/v4/posts/${'p'.repeat(26)}`,
     ]);
+  });
+
+  it('sends an explicit callback secret unchanged', async () => {
+    const { callbackTokens, connected, root } = await fixture();
+    await verifyMattermostRuntime(root, BOT_ID, OWNER_ID, `mattermost:${CHANNEL_ID}`, { queryHostImpl: connected });
+    expect(callbackTokens).toEqual(['test-secret', undefined, 'test-secret']);
+  });
+
+  it.each([
+    ['missing', ['MATTERMOST_BOT_TOKEN=test-token']],
+    ['blank', ['MATTERMOST_BOT_TOKEN=test-token', 'MATTERMOST_CALLBACK_SECRET=']],
+    ['whitespace', ['MATTERMOST_BOT_TOKEN=test-token', 'MATTERMOST_CALLBACK_SECRET="  "']],
+  ])('sends the token-derived secret when the saved secret is %s', async (_case, credentialLines) => {
+    // Pinned to the adapter's derivation so a label drift fails here.
+    const derived = createHmac('sha256', 'test-token').update('nanoclaw-mattermost-callback-secret:v1').digest('hex');
+    const { callbackTokens, connected, root } = await fixture({ credentialLines, acceptedSecret: derived });
+    await verifyMattermostRuntime(root, BOT_ID, OWNER_ID, `mattermost:${CHANNEL_ID}`, { queryHostImpl: connected });
+    expect(callbackTokens).toEqual([derived, undefined, derived]);
+  });
+
+  it.each([
+    ['empty', ['MATTERMOST_BOT_TOKEN=']],
+    ['whitespace', ['MATTERMOST_BOT_TOKEN="  "']],
+  ])('still fails when the bot token is %s and no secret is saved', async (_case, credentialLines) => {
+    const { connected, requests, root } = await fixture({ credentialLines });
+    await expect(
+      verifyMattermostRuntime(root, BOT_ID, OWNER_ID, `mattermost:${CHANNEL_ID}`, { queryHostImpl: connected }),
+    ).rejects.toThrow('MATTERMOST_BOT_TOKEN is missing');
+    expect(requests).toEqual([]);
   });
 
   it('rejects a live host without a connected Mattermost adapter before using credentials', async () => {
