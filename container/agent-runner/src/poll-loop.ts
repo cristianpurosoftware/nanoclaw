@@ -265,7 +265,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     try {
       const result = await processQuery(
         query,
-        routing,
+        // agentOnly from the rows the provider actually sees: a /clear or a
+        // script-skipped task in the batch must not decide who is owed a reply.
+        { ...routing, agentOnly: extractRouting(keep).agentOnly },
         processingIds,
         config.providerName,
         config.provider.onExchangeComplete?.bind(config.provider),

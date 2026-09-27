@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './mailbox/sqlite/connection.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
-import { processQuery } from './poll-loop.js';
+import { processQuery, runPollLoop } from './poll-loop.js';
+import { MockProvider } from './providers/mock.js';
 import type { AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
 
 // Adversarial verification of the one-door contract for mid-turn delivery
@@ -778,5 +779,76 @@ describe('capability=true keeps base result-door handling for door-skipped block
 
     expect(deliveredTexts()).toEqual([]);
     expect(nudges(pushes)).toHaveLength(1);
+  });
+});
+
+// ── Runner commands in the batch do not decide who is owed a reply ──
+
+/** Answers the first prompt with an a2a tool send and unwrapped closing prose; records later pushes. */
+class AgentReplyProvider extends MockProvider {
+  pushes: string[] = [];
+  query(): AgentQuery {
+    const pushes = this.pushes;
+    let aborted = false;
+    let wake: (() => void) | null = null;
+    return {
+      push: (m: string) => {
+        pushes.push(m);
+        wake?.();
+      },
+      end: () => {},
+      abort: () => {
+        aborted = true;
+        wake?.();
+      },
+      events: (async function* (): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        const { writeMessageOut } = await import('./db/messages-out.js');
+        writeMessageOut({
+          id: 'a2a-reply',
+          kind: 'chat',
+          platform_id: 'ag-caller',
+          channel_type: 'agent',
+          thread_id: null,
+          content: JSON.stringify({ text: 'Done.' }),
+        });
+        yield { type: 'result', text: 'Replied via the tool.' };
+        while (!aborted) await new Promise<void>((r) => (wake = r));
+      })(),
+    };
+  }
+}
+
+describe('runner commands in the batch', () => {
+  it.each([
+    ['claude', 'mid-turn-complete'],
+    ['opencode', 'result'],
+  ] as const)('a /clear riding with an agent request does not nudge the a2a reply (%s)', async (name, textDelivery) => {
+    const insert = getInboundDb().prepare(
+      `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, content)
+       VALUES (?, ?, 'chat', datetime('now'), 'pending', ?, ?, ?)`,
+    );
+    insert.run('m-clear', 2, 'chan-1', 'discord', JSON.stringify({ sender: 'Alice', text: '/clear' }));
+    insert.run('m-agent', 4, 'ag-caller', 'agent', JSON.stringify({ sender: 'caller', text: 'Status?' }));
+    const provider = new AgentReplyProvider();
+    const controller = new AbortController();
+    const loop = runPollLoop({
+      provider,
+      providerContract: { textDelivery, commands: { formatting: 'xml' } },
+      providerName: name,
+      cwd: '/tmp',
+      signal: controller.signal,
+    });
+
+    const deadline = Date.now() + 3000;
+    while (!getUndeliveredMessages().some((m) => m.id === 'a2a-reply')) {
+      if (Date.now() > deadline) throw new Error('a2a reply never written');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await new Promise((r) => setTimeout(r, 300)); // let the result dispatch run
+    controller.abort();
+    await loop.catch(() => {});
+
+    expect(nudges(provider.pushes)).toHaveLength(0);
   });
 });
