@@ -399,12 +399,7 @@ responses, timeouts and session revocation fail closed. Iron listens only on
 loopback in the same container, with dial-time loopback restrictions preventing
 backend access through DNS aliases. Control-plane sync cannot replace the front.
 Credentialed application traffic uses HTTPS; the Iron adapter preserves the
-request scheme and rejects plaintext HTTP rather than treating it as HTTPS.
-Iron verifies upstream certificates against public roots. An operator may add
-one local CA through `SSL_CERT_DIR`; setup accepts it only with critical name
-constraints that permit only private DNS names and private IP ranges, and no
-subjectAltName of its own (constraints do not bind the anchor itself), so it cannot vouch for a
-public model host that receives injected credentials. The adapter's summary helper receives a 16 KiB body prefix and no authorization headers;
+request scheme and rejects plaintext HTTP rather than treating it as HTTPS. Its helper receives a 16 KiB body prefix and no authorization headers;
 only the resulting summary crosses the approval channel. The original request
 stream is preserved. The source is checksum-verified, its upstream tests run in
 the image build, and a version mismatch against OneCLI's gateway pin fails the
