@@ -6,9 +6,9 @@ import { queryHost } from '../../../../setup/lib/host-status.mjs';
 
 const MATTERMOST_ID = /^[a-z0-9]{26}$/;
 // Hand-edited installs may omit MATTERMOST_CALLBACK_SECRET; the adapter then
-// derives one from the bot token. The label and algorithm must match
-// resolveCallbackSecret in src/channels/mattermost-adapter/adapter.ts, which
-// is the source of truth.
+// derives one from the bot token. Must match resolveCallbackSecret in the
+// installed Mattermost adapter (channels branch), the source of truth; a label
+// change there needs the same change here.
 const DERIVED_CALLBACK_SECRET_LABEL = 'nanoclaw-mattermost-callback-secret:v1';
 
 type HostStatus = {
