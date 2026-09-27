@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NanoClaw Explainer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&family=JetBrains+Mono:wght@500;700&display=block">
+<!--
+  NanoClaw explainer video, authored as one deterministic HTML timeline.
+
+  Every animation is a CSS animation whose delay is an absolute timestamp in
+  seconds (the --s / --e / --d custom properties). render.mjs pauses all
+  animations and seeks them to each frame's time, so the page is a pure
+  function of t. Open this file in a browser to watch it play live.
+-->
+<style>
+  :root {
+    --bg: #07043c;
+    --bg2: #0d0a55;
+    --panel: #120f63;
+    --line: #2a2690;
+    --cyan: #00dcde;
+    --cyan-soft: rgba(0, 220, 222, 0.14);
+    --pink: #ff6fb5;
+    --amber: #ffc857;
+    --green: #4ee39a;
+    --white: #ffffff;
+    --muted: #a9a6e6;
+    --dim: #5d59b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); }
+  body {
+    font-family: 'Nunito', 'DejaVu Sans', sans-serif;
+    color: var(--white);
+    position: relative;
+  }
+  .mono { font-family: 'JetBrains Mono', 'DejaVu Sans Mono', monospace; }
+
+  /* Ambient backdrop */
+  .backdrop { position: absolute; inset: 0; overflow: hidden; }
+  .backdrop::before {
+    content: ''; position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.06) 1.5px, transparent 1.5px);
+    background-size: 48px 48px;
+  }
+  .glow {
+    position: absolute; width: 1100px; height: 1100px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(0,220,222,0.16), transparent 60%);
+    animation: drift 95s linear 0s both;
+  }
+  @keyframes drift {
+    0% { transform: translate(-300px, -400px); }
+    50% { transform: translate(1100px, 100px); }
+    100% { transform: translate(200px, -200px); }
+  }
+
+  /* Progress bar */
+  .progress { position: absolute; left: 0; bottom: 0; height: 6px; background: var(--cyan); width: 1920px; transform-origin: left; animation: grow 95s linear 0s both; opacity: .7; }
+  @keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+  /* Scenes */
+  .scene {
+    position: absolute; inset: 0;
+    animation: sceneIn .6s ease-out var(--s) both, sceneOut .5s ease-in var(--e) forwards;
+  }
+  @keyframes sceneIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes sceneOut { from { opacity: 1; } to { opacity: 0; } }
+
+  .a  { animation: fadeUp .7s cubic-bezier(.2,.8,.2,1) var(--d) both; }
+  .fi { animation: fadeIn .6s ease-out var(--d) both; }
+  .pop { animation: pop .55s cubic-bezier(.3,1.6,.5,1) var(--d) both; }
+  .fo { animation: fadeUp .7s cubic-bezier(.2,.8,.2,1) var(--d) both, fadeOutK .4s ease-in var(--o) forwards; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: none; } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes fadeOutK { from { opacity: 1; } to { opacity: 0; } }
+  @keyframes pop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: scale(1); } }
+
+  .kicker { font-size: 30px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; color: var(--cyan); }
+  .title { font-size: 76px; font-weight: 900; line-height: 1.05; letter-spacing: -0.01em; }
+  .title em { font-style: normal; color: var(--cyan); }
+  .caption {
+    position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%);
+    width: 1500px; text-align: center; font-size: 38px; font-weight: 700; color: var(--muted); line-height: 1.35;
+  }
+  .caption b { color: var(--white); }
+  .head { position: absolute; left: 120px; top: 90px; }
+  .head .title { margin-top: 14px; }
+
+  .box {
+    position: absolute; background: var(--panel); border: 3px solid var(--line); border-radius: 26px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+  }
+  .box .lbl { font-size: 34px; font-weight: 900; }
+  .box .sub { font-size: 22px; font-weight: 700; color: var(--muted); margin-top: 6px; }
+  .box.cy { border-color: var(--cyan); box-shadow: 0 0 0 8px var(--cyan-soft); }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 14px; padding: 14px 26px; border-radius: 999px;
+    background: var(--panel); border: 2px solid var(--line); font-size: 30px; font-weight: 800; white-space: nowrap;
+  }
+  .dot { width: 18px; height: 18px; border-radius: 50%; flex: none; }
+
+  /* Moving tokens slide underneath the boxes they pass through. */
+  .s4 .box, .s6 .box { z-index: 2; }
+  .token, .req { z-index: 1; }
+
+  /* ---------- Scene 1: intro ---------- */
+  .s1 .logo { position: absolute; left: 50%; top: 360px; width: 1100px; transform: translateX(-50%); }
+  .s1 .logo img { width: 100%; display: block; -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent), linear-gradient(to bottom, transparent, #000 18%, #000 82%, transparent); -webkit-mask-composite: source-in; mask-composite: intersect; animation: pop .9s cubic-bezier(.3,1.4,.5,1) .3s both; }
+  .s1 .tag { position: absolute; top: 700px; width: 100%; text-align: center; font-size: 50px; font-weight: 800; }
+  .s1 .tag2 { position: absolute; top: 790px; width: 100%; text-align: center; font-size: 36px; font-weight: 700; color: var(--muted); }
+
+  /* ---------- Scene 2: why ---------- */
+  .cmp { position: absolute; top: 330px; width: 780px; height: 520px; border-radius: 32px; padding: 50px 56px; }
+  .cmp.l { left: 120px; background: rgba(255,111,181,0.07); border: 3px solid rgba(255,111,181,.45); }
+  .cmp.r { left: 1020px; background: rgba(0,220,222,0.07); border: 3px solid rgba(0,220,222,.6); }
+  .cmp h3 { font-size: 40px; font-weight: 900; margin-bottom: 34px; }
+  .cmp.l h3 { color: var(--pink); }
+  .cmp.r h3 { color: var(--cyan); }
+  .cmp li { list-style: none; font-size: 34px; font-weight: 700; margin: 0 0 24px; display: flex; gap: 18px; align-items: baseline; }
+  .cmp li .n { font-weight: 900; min-width: 180px; color: var(--white); }
+  .cmp li span.t { color: var(--muted); }
+  .cmp.l .n { color: var(--pink); }
+  .cmp.r .n { color: var(--cyan); }
+
+  /* ---------- Scene 3: channels ---------- */
+  .s3 .host { left: 760px; top: 420px; width: 400px; height: 240px; }
+  .s3 .host .lbl { font-size: 40px; }
+  .s3 .ch { position: absolute; }
+  .s3 .ch .chip { font-size: 26px; padding: 12px 22px; }
+  @keyframes flyL { 0% { opacity: 0; transform: translate(-40px, 0); } 15% { opacity: 1; transform: none; } 100% { opacity: 1; transform: none; } }
+  .bubble {
+    position: absolute; left: 1250px; top: 250px; width: 560px; padding: 26px 32px; border-radius: 30px 30px 30px 8px;
+    background: var(--white); color: #16134f; font-size: 32px; font-weight: 800; line-height: 1.3;
+    box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  }
+  .bubble .who { font-size: 22px; color: #6b67b8; margin-bottom: 8px; }
+  .bubble .at { color: #008f91; }
+  .wire { position: absolute; height: 4px; background: linear-gradient(90deg, transparent, var(--cyan)); transform-origin: left center; animation: wireGrow .6s ease-out var(--d) both; }
+  @keyframes wireGrow { from { transform: scaleX(0) rotate(var(--r)); opacity: 0; } to { transform: scaleX(1) rotate(var(--r)); opacity: .55; } }
+
+  /* ---------- Scene 4: flow ---------- */
+  .s4 svg.pipes { position: absolute; inset: 0; }
+  .s4 .pipe { fill: none; stroke: var(--line); stroke-width: 6; stroke-linecap: round; }
+  .s4 .pipe.lit { stroke: var(--cyan); stroke-dasharray: 2200; stroke-dashoffset: 2200; animation: draw 5s linear var(--d) both; opacity: .8; }
+  .s4 .pipe.lit2 { stroke: var(--green); stroke-dasharray: 2200; stroke-dashoffset: 2200; animation: draw 5s linear var(--d) both; opacity: .8; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .token {
+    position: absolute; left: 0; top: 0; width: 38px; height: 38px; margin: -19px 0 0 -19px; border-radius: 50%;
+    offset-rotate: 0deg;
+  }
+  .token.in { background: var(--cyan); box-shadow: 0 0 30px 10px rgba(0,220,222,.55);
+    offset-path: path('M 420 455 L 1350 455');
+    animation: travel 5s cubic-bezier(.45,0,.55,1) 34.2s both, tokenFade .3s linear 39.2s forwards; }
+  .token.out { background: var(--green); box-shadow: 0 0 30px 10px rgba(78,227,154,.55);
+    offset-path: path('M 1350 705 L 420 705');
+    animation: travel 5s cubic-bezier(.45,0,.55,1) 42.6s both, tokenFade .3s linear 47.6s forwards; }
+  @keyframes travel { 0% { offset-distance: 0%; opacity: 0; } 6% { opacity: 1; } 100% { offset-distance: 100%; opacity: 1; } }
+  @keyframes tokenFade { to { opacity: 0; } }
+  .s4 .db { width: 250px; height: 150px; border-radius: 22px; }
+  .s4 .db .lbl { font-size: 28px; }
+  .s4 .db .sub { font-size: 19px; }
+  .cyl { width: 54px; height: 44px; margin-bottom: 10px; }
+  .step {
+    position: absolute; font-size: 22px; font-weight: 900; color: var(--bg); background: var(--cyan);
+    width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  }
+  .step.g { background: var(--green); }
+  .steplbl { position: absolute; font-size: 24px; font-weight: 800; color: var(--white); white-space: nowrap; }
+  .thinking { display: flex; gap: 12px; margin-top: 16px; }
+  .thinking i { width: 16px; height: 16px; border-radius: 50%; background: var(--cyan); display: block; animation: blink 0.9s ease-in-out infinite; animation-delay: 0s; }
+  .thinking i:nth-child(2) { animation-delay: .15s; }
+  .thinking i:nth-child(3) { animation-delay: .3s; }
+  @keyframes blink { 0%, 100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-8px); } }
+  .entity { position: absolute; left: 50%; top: 250px; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; }
+  .entity .chip { font-size: 25px; padding: 10px 20px; }
+  .entity .arr { font-size: 30px; color: var(--cyan); font-weight: 900; }
+
+  /* ---------- Scene 5: isolation ---------- */
+  .machine { position: absolute; left: 120px; top: 270px; width: 1680px; height: 600px; border: 3px dashed var(--dim); border-radius: 36px; }
+  .machine .mlabel { position: absolute; left: 36px; top: -24px; background: var(--bg); padding: 0 16px; font-size: 26px; font-weight: 800; color: var(--muted); }
+  .ctr { position: absolute; top: 330px; width: 420px; height: 340px; border-radius: 26px; background: var(--panel); border: 3px solid var(--cyan); padding: 28px 30px; }
+  .ctr h4 { font-size: 34px; font-weight: 900; display: flex; align-items: center; gap: 14px; }
+  .ctr h4 .tagc { font-size: 18px; font-weight: 800; color: var(--bg); background: var(--cyan); padding: 4px 12px; border-radius: 999px; }
+  .ctr ul { margin-top: 20px; }
+  .ctr li { list-style: none; font-size: 25px; color: var(--muted); margin-bottom: 12px; }
+  .ctr li b { color: var(--white); font-weight: 700; }
+  .hostfiles { position: absolute; left: 1560px; top: 330px; width: 240px; }
+  .hostfiles div { font-size: 24px; color: var(--dim); margin-bottom: 18px; display: flex; gap: 10px; align-items: center; }
+  .shield { position: absolute; top: 700px; font-size: 26px; font-weight: 800; color: var(--green); }
+
+  /* ---------- Scene 6: credentials ---------- */
+  .s6 .n1 { left: 140px; top: 360px; width: 380px; height: 220px; }
+  .s6 .n2 { left: 770px; top: 330px; width: 380px; height: 280px; }
+  .s6 .n3 { left: 1400px; top: 360px; width: 380px; height: 220px; }
+  .s6 .arrow { position: absolute; top: 462px; height: 6px; background: var(--line); border-radius: 3px; }
+  .req { position: absolute; top: 445px; padding: 8px 16px; border-radius: 12px; background: var(--white); color: #16134f; font-size: 22px; font-weight: 800; white-space: nowrap; }
+  .req1 { animation: moveReq1 2.4s cubic-bezier(.45,0,.55,1) 62.6s both, fadeOutK .3s linear 65s forwards; }
+  .req2 { animation: moveReq2 2.4s cubic-bezier(.45,0,.55,1) 65.2s both, fadeOutK .3s linear 67.6s forwards; }
+  @keyframes moveReq1 { from { left: 330px; opacity: 0; } 10% { opacity: 1; } to { left: 800px; opacity: 1; } }
+  @keyframes moveReq2 { from { left: 960px; opacity: 0; } 10% { opacity: 1; } to { left: 1420px; opacity: 1; } }
+  .req .key { color: #b88600; }
+  .approval {
+    position: absolute; left: 1210px; top: 640px; width: 560px; padding: 28px 32px; border-radius: 26px; background: var(--white); color: #16134f;
+    box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  }
+  .approval .h { font-size: 22px; font-weight: 900; color: #6b67b8; letter-spacing: .08em; text-transform: uppercase; }
+  .approval .b { font-size: 28px; font-weight: 800; margin: 10px 0 20px; }
+  .approval .btns { display: flex; gap: 16px; }
+  .approval .btn { padding: 12px 30px; border-radius: 14px; font-size: 24px; font-weight: 900; }
+  .approval .ok { background: #11a36a; color: white; }
+  .approval .no { background: #ececf8; color: #16134f; }
+  .click { animation: press .4s ease-in-out 71.2s both; }
+  @keyframes press { 0% { transform: scale(1); } 50% { transform: scale(.9); box-shadow: 0 0 0 10px rgba(17,163,106,.35); } 100% { transform: scale(1); } }
+
+  /* ---------- Scene 7: skills ---------- */
+  .trunk { left: 710px; top: 330px; width: 500px; height: 420px; justify-content: flex-start; padding-top: 34px; }
+  .trunk .slot { margin-top: 18px; display: flex; flex-direction: column; gap: 14px; align-items: center; }
+  .col { position: absolute; top: 300px; width: 420px; }
+  .col h5 { font-size: 26px; font-weight: 900; color: var(--muted); margin-bottom: 22px; text-transform: uppercase; letter-spacing: .12em; }
+  .col .chip { font-size: 26px; padding: 11px 22px; margin: 0 10px 14px 0; opacity: .55; }
+  .cmd { position: absolute; font-size: 30px; font-weight: 700; color: var(--cyan); background: #05032a; border: 2px solid var(--line); border-radius: 14px; padding: 12px 22px; overflow: hidden; white-space: nowrap; }
+  .landed { font-size: 26px; padding: 11px 22px; border-color: var(--cyan); }
+
+  /* ---------- Scene 8: terminal ---------- */
+  .term { position: absolute; left: 260px; top: 250px; width: 1400px; height: 560px; border-radius: 24px; background: #04021f; border: 3px solid var(--line); overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+  .term .bar { height: 56px; background: #0e0b4a; display: flex; align-items: center; gap: 12px; padding: 0 22px; }
+  .term .bar i { width: 18px; height: 18px; border-radius: 50%; display: block; }
+  .term .body { padding: 34px 44px; font-size: 32px; line-height: 1.7; }
+  .typed { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: bottom; width: 0;
+    animation: type var(--t) steps(var(--n)) var(--d) both; }
+  @keyframes type { from { width: 0; } to { width: calc(var(--n) * 1ch); } }
+  .prompt { color: var(--cyan); }
+  .ok { color: var(--green); }
+  .end .logo { position: absolute; left: 50%; top: 330px; width: 900px; transform: translateX(-50%); }
+  .end .logo img { width: 100%; display: block; -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent), linear-gradient(to bottom, transparent, #000 18%, #000 82%, transparent); -webkit-mask-composite: source-in; mask-composite: intersect; }
+</style>
+</head>
+<body>
+<div class="backdrop"><div class="glow"></div></div>
+
+<!-- ================= 1. Intro (0–7s) ================= -->
+<section class="scene s1" style="--s:0s; --e:6.6s">
+  <div class="logo"><img src="../../assets/nanoclaw-logo-dark.png" alt="NanoClaw"></div>
+  <div class="tag a" style="--d:1.4s">Your personal AI assistant, in <span style="color:var(--cyan)">containers you control</span>.</div>
+  <div class="tag2 a" style="--d:2.4s">Small enough to understand. Built to be yours.</div>
+</section>
+
+<!-- ================= 2. Why (7–17s) ================= -->
+<section class="scene s2" style="--s:7s; --e:16.6s">
+  <div class="head">
+    <div class="kicker a" style="--d:7.2s">Why NanoClaw</div>
+    <div class="title a" style="--d:7.5s">Would you hand your life to code<br>you <em>can't read</em>?</div>
+  </div>
+  <div class="cmp l a" style="--d:8.8s">
+    <h3>A typical agent framework</h3>
+    <ul>
+      <li class="a" style="--d:9.4s"><span class="n">~500k</span><span class="t">lines of code</span></li>
+      <li class="a" style="--d:9.8s"><span class="n">53</span><span class="t">config files</span></li>
+      <li class="a" style="--d:10.2s"><span class="n">70+</span><span class="t">dependencies</span></li>
+      <li class="a" style="--d:10.6s"><span class="n">1 process</span><span class="t">shared memory, allowlists</span></li>
+    </ul>
+  </div>
+  <div class="cmp r a" style="--d:11.8s">
+    <h3>NanoClaw</h3>
+    <ul>
+      <li class="a" style="--d:12.4s"><span class="n">1 host</span><span class="t">a handful of source files</span></li>
+      <li class="a" style="--d:12.8s"><span class="n">0</span><span class="t">config sprawl, just code</span></li>
+      <li class="a" style="--d:13.2s"><span class="n">Linux</span><span class="t">containers per agent session</span></li>
+      <li class="a" style="--d:13.6s"><span class="n">OS-level</span><span class="t">isolation, not allowlists</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 3. Channels (17–30s) ================= -->
+<section class="scene s3" style="--s:17s; --e:29.6s">
+  <div class="head">
+    <div class="kicker a" style="--d:17.2s">Talk to it anywhere</div>
+    <div class="title a" style="--d:17.5s">Every chat app you choose,<br>one <em>host process</em>.</div>
+  </div>
+
+  <div class="wire" style="--d:19.6s; --r:14deg;  left:470px; top:410px; width:300px"></div>
+  <div class="wire" style="--d:19.8s; --r:5deg;   left:470px; top:480px; width:295px"></div>
+  <div class="wire" style="--d:20.0s; --r:-4deg;  left:470px; top:560px; width:295px"></div>
+  <div class="wire" style="--d:20.2s; --r:-14deg; left:470px; top:640px; width:300px"></div>
+
+  <div class="ch a" style="--d:18.6s; left:140px; top:380px"><span class="chip"><span class="dot" style="background:#25d366"></span>WhatsApp</span></div>
+  <div class="ch a" style="--d:18.8s; left:140px; top:455px"><span class="chip"><span class="dot" style="background:#e01e5a"></span>Slack</span></div>
+  <div class="ch a" style="--d:19.0s; left:140px; top:530px"><span class="chip"><span class="dot" style="background:#29a9eb"></span>Telegram</span></div>
+  <div class="ch a" style="--d:19.2s; left:140px; top:605px"><span class="chip"><span class="dot" style="background:#5865f2"></span>Discord</span></div>
+  <div class="ch a" style="--d:19.4s; left:140px; top:680px"><span class="chip"><span class="dot" style="background:#34c759"></span>iMessage</span></div>
+  <div class="ch fi" style="--d:20.4s; left:140px; top:770px; font-size:26px; font-weight:800; color:var(--muted); width:600px; line-height:1.5">+ Teams · Signal · Matrix · Google Chat<br>· GitHub · Linear · Email · WeChat…</div>
+
+  <div class="box cy host pop" style="--d:19.2s">
+    <div class="lbl">NanoClaw host</div>
+    <div class="sub">one Node process</div>
+  </div>
+
+  <div class="bubble a" style="--d:21.6s">
+    <div class="who">You · WhatsApp</div>
+    <span class="at">@Andy</span> send me an overview of the sales pipeline every weekday at 9am
+  </div>
+  <div class="bubble a" style="--d:24.2s; top:520px; left:1330px; width:480px; background:var(--cyan); color:#05032a; border-radius:30px 30px 8px 30px">
+    <div class="who" style="color:#045e60">Andy</div>
+    Done. Scheduled for weekdays, 9:00am ✅
+  </div>
+  <div class="caption fi" style="--d:25.4s">Channels plug in as adapters. Run <b>one or many</b> at the same time.</div>
+</section>
+
+<!-- ================= 4. Message flow (30–50s) ================= -->
+<section class="scene s4" style="--s:30s; --e:49.6s">
+  <div class="head" style="top:70px">
+    <div class="kicker a" style="--d:30.2s">How a message travels</div>
+    <div class="title a" style="--d:30.5s; font-size:64px">Everything is a <em>message</em>.</div>
+  </div>
+
+  <div class="entity">
+    <span class="chip a" style="--d:31.6s"><span class="dot" style="background:var(--pink)"></span>user</span><span class="arr fi" style="--d:31.9s">→</span>
+    <span class="chip a" style="--d:32.1s"><span class="dot" style="background:var(--amber)"></span>messaging group</span><span class="arr fi" style="--d:32.4s">→</span>
+    <span class="chip a" style="--d:32.6s"><span class="dot" style="background:var(--cyan)"></span>agent group</span><span class="arr fi" style="--d:32.9s">→</span>
+    <span class="chip a" style="--d:33.1s"><span class="dot" style="background:var(--green)"></span>session</span>
+  </div>
+
+  <svg class="pipes" width="1920" height="1080">
+    <path class="pipe" d="M 420 455 L 1350 455" />
+    <path class="pipe" d="M 1350 705 L 420 705" />
+    <path class="pipe lit" style="--d:34.2s" d="M 420 455 L 1350 455" pathLength="2200" />
+    <path class="pipe lit2" style="--d:42.6s" d="M 1350 705 L 420 705" pathLength="2200" />
+  </svg>
+
+  <div class="box a" style="--d:31s; left:120px; top:360px; width:300px; height:440px">
+    <div style="font-size:64px">💬</div>
+    <div class="lbl">Chat app</div>
+    <div class="sub">via channel adapter</div>
+  </div>
+
+  <div class="box a" style="--d:31.3s; left:560px; top:385px; width:250px; height:140px">
+    <div class="lbl" style="font-size:28px">Router</div><div class="sub" style="font-size:19px">src/router.ts</div>
+  </div>
+  <div class="box db a" style="--d:31.5s; left:935px; top:380px">
+    <svg class="cyl" viewBox="0 0 54 44"><ellipse cx="27" cy="8" rx="24" ry="7" fill="none" stroke="#00dcde" stroke-width="3"/><path d="M3 8 v28 a24 7 0 0 0 48 0 v-28" fill="none" stroke="#00dcde" stroke-width="3"/></svg>
+    <div class="lbl mono">inbound.db</div><div class="sub">host writes</div>
+  </div>
+
+  <div class="box cy a" style="--d:31.7s; left:1350px; top:360px; width:450px; height:440px">
+    <div style="font-size:26px; font-weight:800; color:var(--muted)">🐳 per-session container</div>
+    <div class="lbl" style="margin-top:14px">Agent runner</div>
+    <div class="sub">Claude Agent SDK<br>(or Codex, OpenCode…)</div>
+    <div class="thinking fi" style="--d:39.4s"><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="box db a" style="--d:31.9s; left:935px; top:630px">
+    <svg class="cyl" viewBox="0 0 54 44"><ellipse cx="27" cy="8" rx="24" ry="7" fill="none" stroke="#4ee39a" stroke-width="3"/><path d="M3 8 v28 a24 7 0 0 0 48 0 v-28" fill="none" stroke="#4ee39a" stroke-width="3"/></svg>
+    <div class="lbl mono">outbound.db</div><div class="sub">container writes</div>
+  </div>
+  <div class="box a" style="--d:32.1s; left:560px; top:635px; width:250px; height:140px">
+    <div class="lbl" style="font-size:28px">Delivery</div><div class="sub" style="font-size:19px">src/delivery.ts</div>
+  </div>
+
+  <div class="token in"></div>
+  <div class="token out"></div>
+
+  <div class="step pop" style="--d:34.6s; left:463px; top:388px">1</div><div class="steplbl a" style="--d:34.6s; left:430px; top:330px">route</div>
+  <div class="step pop" style="--d:36.2s; left:838px; top:388px">2</div><div class="steplbl a" style="--d:36.2s; left:790px; top:330px">write</div>
+  <div class="step pop" style="--d:38.2s; left:1220px; top:388px">3</div><div class="steplbl a" style="--d:38.2s; left:1180px; top:330px">wake</div>
+  <div class="step g pop" style="--d:43.2s; left:1220px; top:730px">4</div><div class="steplbl a" style="--d:43.2s; left:1182px; top:790px">reply</div>
+  <div class="step g pop" style="--d:45.6s; left:838px; top:730px">5</div><div class="steplbl a" style="--d:45.6s; left:790px; top:790px">poll</div>
+  <div class="step g pop" style="--d:47.2s; left:463px; top:730px">6</div><div class="steplbl a" style="--d:47.2s; left:425px; top:790px">deliver</div>
+
+  <div class="caption fi" style="--d:40.2s; bottom:60px">Two SQLite files per session, <b>exactly one writer each</b>.<br>No IPC, no sockets, no stdin piping.</div>
+</section>
+
+<!-- ================= 5. Isolation (50–61s) ================= -->
+<section class="scene s5" style="--s:50s; --e:60.6s">
+  <div class="head" style="top:70px">
+    <div class="kicker a" style="--d:50.2s">Secure by isolation</div>
+    <div class="title a" style="--d:50.5s; font-size:64px">Each agent gets its <em>own container</em>.</div>
+  </div>
+  <div class="machine fi" style="--d:51s"><span class="mlabel">your machine</span></div>
+
+  <div class="ctr a" style="--d:51.6s; left:180px">
+    <h4>Personal <span class="tagc">agent</span></h4>
+    <ul>
+      <li><b>CLAUDE.md</b> · personality</li>
+      <li><b>memory/</b> · its own</li>
+      <li><b>skills/</b></li>
+      <li>mount: <b>~/obsidian</b> (ro)</li>
+    </ul>
+  </div>
+  <div class="ctr a" style="--d:52.2s; left:640px">
+    <h4>Work <span class="tagc">agent</span></h4>
+    <ul>
+      <li><b>CLAUDE.md</b> · personality</li>
+      <li><b>memory/</b> · its own</li>
+      <li><b>skills/</b></li>
+      <li>mount: <b>~/code/crm</b></li>
+    </ul>
+  </div>
+  <div class="ctr a" style="--d:52.8s; left:1100px; border-color:var(--amber)">
+    <h4>Family <span class="tagc" style="background:var(--amber)">agent</span></h4>
+    <ul>
+      <li><b>CLAUDE.md</b> · personality</li>
+      <li><b>memory/</b> · its own</li>
+      <li><b>skills/</b></li>
+      <li>mount: <i style="color:var(--dim)">nothing</i></li>
+    </ul>
+  </div>
+  <div class="hostfiles">
+    <div class="a" style="--d:54s">🔒 ~/.ssh</div>
+    <div class="a" style="--d:54.3s">🔒 ~/Documents</div>
+    <div class="a" style="--d:54.6s">🔒 .env</div>
+    <div class="a" style="--d:54.9s">🔒 other agents</div>
+  </div>
+  <div class="shield a" style="--d:55.6s; left:180px">✔ Bash is safe: commands run inside the container, not on your host.</div>
+  <div class="caption fi" style="--d:56.4s">Agents see <b>only what you explicitly mount</b>. Nothing crosses the boundary unless you wire it to.</div>
+</section>
+
+<!-- ================= 6. Credentials (61–73s) ================= -->
+<section class="scene s6" style="--s:61s; --e:72.6s">
+  <div class="head" style="top:70px">
+    <div class="kicker a" style="--d:61.2s">Credential security</div>
+    <div class="title a" style="--d:61.5s; font-size:64px">Agents never hold <em>raw API keys</em>.</div>
+  </div>
+
+  <div class="arrow fi" style="--d:62s; left:520px; width:250px"></div>
+  <div class="arrow fi" style="--d:62s; left:1150px; width:250px"></div>
+
+  <div class="box a n1" style="--d:61.8s">
+    <div style="font-size:52px">🐳</div>
+    <div class="lbl">Agent</div>
+    <div class="sub">no secrets inside</div>
+  </div>
+  <div class="box cy a n2" style="--d:62.1s">
+    <div style="font-size:56px">🔐</div>
+    <div class="lbl">Credential gateway</div>
+    <div class="sub">injects keys at request time</div>
+    <div class="sub">per-agent policy · rate limits</div>
+  </div>
+  <div class="box a n3" style="--d:62.4s">
+    <div style="font-size:52px">🌐</div>
+    <div class="lbl">APIs</div>
+    <div class="sub">Anthropic, GitHub, …</div>
+  </div>
+
+  <div class="req req1">POST /v1/messages</div>
+  <div class="req req2">POST /v1/messages <span class="key">+ 🔑</span></div>
+
+  <div class="approval a" style="--d:68.4s">
+    <div class="h">Approval needed · sent to you</div>
+    <div class="b">Work agent wants to push to <span class="mono" style="font-size:24px">github.com/acme/crm</span></div>
+    <div class="btns"><span class="btn ok click">Approve</span><span class="btn no">Deny</span></div>
+  </div>
+  <div class="caption fi" style="--d:68.8s; width:1050px; left:140px; transform:none; text-align:left; bottom:150px">Risky calls can wait for <b>your approval</b>, right in chat.</div>
+</section>
+
+<!-- ================= 7. Skills (73–85s) ================= -->
+<section class="scene s7" style="--s:73s; --e:84.6s">
+  <div class="head" style="top:70px">
+    <div class="kicker a" style="--d:73.2s">Skills over features</div>
+    <div class="title a" style="--d:73.5s; font-size:64px">Your fork gets <em>exactly</em> what you ask for.</div>
+  </div>
+
+  <div class="col" style="left:120px">
+    <h5 class="a" style="--d:74.2s">channels branch</h5>
+    <span class="chip a" style="--d:74.4s">Slack</span><span class="chip a" style="--d:74.5s">Telegram</span><span class="chip a" style="--d:74.6s">WhatsApp</span><span class="chip a" style="--d:74.7s">Discord</span><span class="chip a" style="--d:74.8s">Signal</span><span class="chip a" style="--d:74.9s">Matrix</span><span class="chip a" style="--d:75.0s">Teams</span>
+  </div>
+  <div class="col" style="left:1400px">
+    <h5 class="a" style="--d:74.2s">providers</h5>
+    <span class="chip a" style="--d:74.5s">Claude ✦ default</span><span class="chip a" style="--d:74.7s">Codex</span><span class="chip a" style="--d:74.9s">OpenCode</span><span class="chip a" style="--d:75.1s">Ollama</span>
+  </div>
+
+  <div class="box cy trunk a" style="--d:74s">
+    <div class="lbl">Your fork</div>
+    <div class="sub">trunk = registry + infra</div>
+    <div class="slot">
+      <span class="chip landed pop" style="--d:77.4s"><span class="dot" style="background:#29a9eb"></span>Telegram</span>
+      <span class="chip landed pop" style="--d:79.4s"><span class="dot" style="background:#e01e5a"></span>Slack</span>
+      <span class="chip landed pop" style="--d:81.2s"><span class="dot" style="background:var(--green)"></span>Codex</span>
+    </div>
+  </div>
+
+  <div class="cmd mono fo" style="--d:75.6s; --o:77.3s; left:760px; top:830px"><span class="typed" style="--d:75.8s; --t:1.2s; --n:13">/add-telegram</span></div>
+  <div class="cmd mono fo" style="--d:77.6s; --o:79.3s; left:760px; top:830px"><span class="typed" style="--d:77.8s; --t:1.2s; --n:10">/add-slack</span></div>
+  <div class="cmd mono fo" style="--d:79.6s; --o:81.1s; left:760px; top:830px"><span class="typed" style="--d:79.8s; --t:1.0s; --n:10">/add-codex</span></div>
+  <div class="caption fi" style="--d:81.6s; bottom:60px">Want different behavior? <b>Just ask Claude Code</b>, it changes your code directly.</div>
+</section>
+
+<!-- ================= 8. Quick start + outro (85–95s) ================= -->
+<section class="scene s8" style="--s:85s; --e:90.4s">
+  <div class="head" style="top:90px">
+    <div class="kicker a" style="--d:85.2s">Get started</div>
+  </div>
+  <div class="term a" style="--d:85.3s">
+    <div class="bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <div class="body mono">
+      <div><span class="prompt">$ </span><span class="typed" style="--d:85.8s; --t:1.4s; --n:50">git clone https://github.com/nanocoai/nanoclaw.git</span></div>
+      <div><span class="prompt">$ </span><span class="typed" style="--d:87.3s; --t:0.8s; --n:30">cd nanoclaw && bash nanoclaw.sh</span></div>
+      <div class="fi" style="--d:88.2s"><span class="ok">✓</span> Node, pnpm, Docker</div>
+      <div class="fi" style="--d:88.6s"><span class="ok">✓</span> Credential gateway installed</div>
+      <div class="fi" style="--d:89.0s"><span class="ok">✓</span> Agent container built</div>
+      <div class="fi" style="--d:89.4s"><span class="ok">✓</span> Channel paired. Say hi to your agent 👋</div>
+    </div>
+  </div>
+</section>
+
+<section class="scene end" style="--s:90.6s; --e:200s">
+  <div class="logo"><img class="pop" style="--d:90.8s" src="../../assets/nanoclaw-logo-dark.png" alt="NanoClaw"></div>
+  <div class="a" style="--d:91.6s; position:absolute; top:620px; width:100%; text-align:center; font-size:46px; font-weight:800">Small enough to understand. Secure by isolation.</div>
+  <div class="a mono" style="--d:92.2s; position:absolute; top:720px; width:100%; text-align:center; font-size:34px; color:var(--cyan)">nanoclaw.dev  ·  github.com/nanocoai/nanoclaw</div>
+</section>
+
+<div class="progress"></div>
+
+<script>
+  // Seek every animation on the page to an absolute time (seconds).
+  window.seek = (t) => {
+    for (const a of document.getAnimations()) {
+      a.pause();
+      a.currentTime = t * 1000;
+    }
+  };
+  window.DURATION = 95;
+  // Typing effects animate width in ch; derive the character count from the text.
+  for (const el of document.querySelectorAll('.typed')) el.style.setProperty('--n', el.textContent.length);
+</script>
+</body>
+</html>
