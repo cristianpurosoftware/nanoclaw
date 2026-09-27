@@ -46,7 +46,7 @@ export function ironModelEndpoint(raw: string, root: string) {
     url.hash
   )
     throw new Error(
-      "NanoClaw's Iron gateway needs the model endpoint as https://<dns-name> on port 443, with a certificate Iron trusts (public CAs by default). Plain HTTP is refused so keys and model replies never cross the network unencrypted. IP addresses are not supported.",
+      "NanoClaw's Iron gateway needs the model endpoint as https://<dns-name> on port 443, with a certificate Iron trusts (public CAs by default). Plain HTTP is refused so keys and model replies never cross the network unencrypted. IP addresses are not supported. The add-iron-proxy skill explains how to serve a local model.",
     );
   return { configure: () => allowModelHost(url.hostname, root), warning: privateNameWarning(url.hostname, root) };
 }

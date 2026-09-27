@@ -548,7 +548,7 @@ describe('OpenCode setup with Iron selected', () => {
     expect(fixture.validationErrors).toHaveLength(1);
     expect(fixture.validationErrors[0]).toMatch(/https:\/\/<dns-name> on port 443/);
     expect(fixture.validationErrors[0]).toMatch(/certificate Iron trusts/);
-    expect(fixture.validationErrors[0]).toMatch(/Local model behind Iron Proxy/);
+    expect(fixture.validationErrors[0]).toMatch(/add-iron-proxy skill explains how to serve a local model/);
     expect(fixture.gatewayEndpoints).toEqual(['https://models.example/v1']);
     expect(fixture.writes).toContainEqual(['OPENCODE_BASE_URL', 'https://models.example/v1']);
   });
@@ -616,7 +616,7 @@ describe('OpenCode setup with Iron selected', () => {
         cause: Object.assign(new Error('certificate verification failed'), { code }),
       });
       await runOpenCodeSetupAuth();
-      expect(fixture.warnings.join('\n')).toMatch(/publicly trusted certificate/);
+      expect(fixture.warnings.join('\n')).toMatch(/use a certificate the gateway trusts/);
     },
   );
   it('does not blame the certificate for a connection failure', async () => {

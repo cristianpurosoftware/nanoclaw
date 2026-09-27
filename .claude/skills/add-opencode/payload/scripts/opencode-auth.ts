@@ -61,7 +61,7 @@ function gatewayEndpointError(store: ProviderCredentialStore, value: string): st
   try {
     store.modelEndpoint?.(value);
   } catch (error) {
-    return `${(error as Error).message} See "Local model behind Iron Proxy" in the add-opencode skill.`;
+    return (error as Error).message;
   }
 }
 
@@ -439,7 +439,7 @@ export async function runOpenCodeAuthStep(options: { allowSkip?: boolean } = {})
       if (isCertificateError(error))
         p.log.warn(
           brandBody(
-            "This host did not trust the endpoint's certificate. If your gateway reaches the same server and verifies upstream TLS, as Iron Proxy does, every request will fail; use a publicly trusted certificate.",
+            "This host did not trust the endpoint's certificate. If your gateway verifies upstream TLS and does not trust it either, every request will fail; use a certificate the gateway trusts.",
           ),
         );
     }
