@@ -145,8 +145,50 @@ Native backends and custom/keyless HTTPS endpoints on port 443 are supported.
 This is NanoClaw's rule for the Iron gateway, not a limit of Iron itself. Use a
 DNS name and a certificate Iron trusts (public CAs by default) for local models;
 setup rejects plain HTTP, other ports, and IP addresses at the prompt, and warns
-about private names such as `*.home.arpa`, which no public CA certifies. The
-OpenCode skill's "Local model behind Iron Proxy" section has a recipe. Follow the OpenCode skill to restart the host and test a real reply.
+about private names such as `*.home.arpa` unless a local CA Iron trusts covers
+them (see [Trust a local CA](#trust-a-local-ca)). The OpenCode skill's "Local
+model behind Iron Proxy" section has a recipe. Follow the OpenCode skill to restart the host and test a real reply.
+
+### Trust a local CA
+
+For a model server on a private name such as `models.home.arpa`, Iron can trust
+your own CA in addition to the public ones. Setup accepts only a CA certificate
+with **critical name constraints** whose permitted DNS names are all private
+(`*.home.arpa`, `*.internal`, `*.local`, `*.corp`, `*.home`, `*.mail`), with
+at least one permitted IP range, all inside `10/8`, `172.16/12`, `192.168/16`
+or `fc00::/7` (without one, the CA could sign for any IP), and with no
+subjectAltName of its own. Anything else is refused: an unconstrained CA, or
+one that names a host itself, could pose as `api.anthropic.com` and Iron would
+hand it your real key.
+
+1. Create the CA (OpenSSL 3). Keep `ca.key` outside the NanoClaw tree:
+
+   ```bash
+   openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+     -keyout ca.key -out ca.crt -days 825 -subj "/CN=LAN models CA" \
+     -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+     -addext "keyUsage=critical,keyCertSign,cRLSign" \
+     -addext "nameConstraints=critical,permitted;DNS:.home.arpa,permitted;IP:192.168.1.0/255.255.255.0"
+   ```
+
+2. Issue the server certificate for the model host from that CA, with the name
+   in `subjectAltName`, and serve it from a TLS reverse proxy on port 443.
+3. Give Iron the CA certificate only (never the key). This restarts the proxy:
+
+   ```bash
+   pnpm exec tsx .claude/skills/add-iron-proxy/scripts/setup.ts --trust-upstream-ca ca.crt
+   ```
+
+4. Make the name resolve inside Iron's container. A record on your LAN DNS works
+   when the host's resolver serves it. Otherwise set
+   `NANOCLAW_IRON_EXTRA_HOSTS=models.home.arpa:192.168.1.20` (comma-separated
+   `name:ip` pairs) in `.env` and rerun `setup.ts`.
+5. Enter `https://models.home.arpa/v1` at the OpenCode local-endpoint prompt.
+   Setup no longer warns for names the CA covers.
+
+Setup revalidates the stored CA every time it starts the proxy. To stop trusting
+it, run `setup.ts --clear-upstream-ca`. Only one local CA is kept; installing
+another replaces it.
 
 ## Remove
 

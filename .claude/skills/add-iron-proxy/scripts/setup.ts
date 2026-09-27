@@ -12,6 +12,13 @@ import { upsertEnvVar } from '../../../../setup/set-env.js';
 import { installStep, installCommand, InstallCommandFailure } from './install-command.js';
 import { buildManagedProxy, hasFrontProxy } from './build-managed-proxy.js';
 import { controlPaths, installControl, removeControl, storeModelCredential } from './control.js';
+import {
+  clearUpstreamCa,
+  installUpstreamCa,
+  parseUpstreamCa,
+  upstreamHostArgs,
+  upstreamTrustArgs,
+} from './upstream-trust.js';
 
 const pins = JSON.parse(
   fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'versions.json'), 'utf8'),
@@ -145,6 +152,11 @@ async function startCentralProxy(projectRoot: string): Promise<void> {
   const paths = statePaths(projectRoot);
   const uid = process.getuid?.();
   const gid = process.getgid?.();
+  // Invalid trust or host settings must fail before the running proxy is removed.
+  const upstreamArgs = [
+    ...upstreamTrustArgs(paths.shared),
+    ...upstreamHostArgs(readProjectEnv(projectRoot).NANOCLAW_IRON_EXTRA_HOSTS),
+  ];
   try {
     await docker(['rm', '-f', paths.containerName]);
   } catch (error) {
@@ -165,6 +177,7 @@ async function startCentralProxy(projectRoot: string): Promise<void> {
     `${LABELS.role}=gateway`,
     ...(uid == null ? [] : ['--user', `${uid}:${gid ?? uid}`]),
     ...centralHostGatewayArgs(),
+    ...upstreamArgs,
     '--restart',
     'unless-stopped',
     '--read-only',
@@ -234,6 +247,11 @@ export async function run(args: string[], projectRoot = process.cwd()): Promise<
     await removeControl(projectRoot);
     return;
   }
+  const trustIndex = args.indexOf('--trust-upstream-ca');
+  if (trustIndex >= 0 && !args[trustIndex + 1]) throw new Error('--trust-upstream-ca requires a CA certificate file');
+  // Read now so a refused CA stops setup before the slow image build.
+  const trustPem = trustIndex >= 0 ? fs.readFileSync(args[trustIndex + 1], 'utf8') : undefined;
+  if (trustPem !== undefined) parseUpstreamCa(trustPem);
   const managed = args.includes('--with-control') || !!readProjectEnv(projectRoot).NANOCLAW_IRON_CONTROL_URL;
   const localIndex = args.indexOf('--local-image');
   if (managed || localIndex < 0) {
@@ -268,6 +286,11 @@ export async function run(args: string[], projectRoot = process.cwd()): Promise<
     allowed.push(validateAllowedHost(args[allowIndex + 1]));
   }
   writeAllowedHosts(allowed, projectRoot);
+  if (args.includes('--clear-upstream-ca')) clearUpstreamCa(paths.shared);
+  if (trustPem !== undefined) {
+    const ca = installUpstreamCa(trustPem, paths.shared);
+    console.log(`Iron will trust the local CA "${ca.subject}" for: ${ca.permittedDns.join(', ')}`);
+  }
   if (!IMAGE.startsWith('sha256:')) await docker(['pull', IMAGE]);
   await ensureCA(projectRoot);
   ensureIdentityKey(projectRoot);

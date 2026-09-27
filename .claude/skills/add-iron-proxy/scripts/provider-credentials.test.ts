@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createIronCredentialConnection, ironModelEndpoint } from './provider-credentials.js';
 import { controlPaths, IronControlRequestError } from './control.js';
+import { statePaths } from './setup.js';
+import { installUpstreamCa } from './upstream-trust.js';
 import type { GatewayCredentialTarget } from '../../../../setup/gateways/credential-store.js';
 const roots: string[] = [];
 afterEach(() => {
@@ -291,9 +293,41 @@ it.each([
   const f = fixture();
   const endpoint = ironModelEndpoint(url, f.root);
   expect(endpoint.warning).toBe(
-    `${host} is a private name. No public CA issues certificates for it, so Iron will refuse the connection unless it trusts your own local CA.`,
+    `${host} is a private name. No public CA issues certificates for it, so Iron will refuse the connection unless it trusts your own local CA. See "Trust a local CA" in the add-iron-proxy skill.`,
   );
   expect(f.allowHost).not.toHaveBeenCalled();
+});
+describe('with a local CA installed for Iron', () => {
+  const ca = (name: string) =>
+    fs.readFileSync(path.join(import.meta.dirname, 'testdata', 'upstream-ca', `${name}.pem`), 'utf8');
+  it('does not warn about a private name the CA covers', () => {
+    const f = fixture();
+    installUpstreamCa(ca('constrained'), statePaths(f.root).shared);
+    expect(ironModelEndpoint('https://models.home.arpa/v1', f.root).warning).toBeUndefined();
+    expect(ironModelEndpoint('https://gpu.lab.home.arpa/v1', f.root).warning).toBeUndefined();
+  });
+  it('names the permitted zones for a private name the CA does not cover', () => {
+    const f = fixture();
+    installUpstreamCa(ca('constrained'), statePaths(f.root).shared);
+    expect(ironModelEndpoint('https://models.corp/v1', f.root).warning).toMatch(
+      /^models\.corp is a private name outside the local CA Iron trusts \(it permits models\.home\.arpa, \.home\.arpa\)/,
+    );
+  });
+  it('warns instead of failing when the stored CA is no longer acceptable', () => {
+    const f = fixture();
+    const shared = statePaths(f.root).shared;
+    installUpstreamCa(ca('constrained'), shared);
+    fs.writeFileSync(path.join(shared, 'upstream-trust', 'local-ca.pem'), ca('unconstrained'));
+    expect(ironModelEndpoint('https://models.home.arpa/v1', f.root).warning).toMatch(
+      /local CA installed for Iron is no longer accepted: .*no name constraints/,
+    );
+  });
+  it('still refuses what no CA can fix', () => {
+    const f = fixture();
+    installUpstreamCa(ca('constrained'), statePaths(f.root).shared);
+    for (const url of ['http://models.home.arpa/v1', 'https://models.home.arpa:8443/v1', 'https://192.168.8.20/v1'])
+      expect(() => ironModelEndpoint(url, f.root)).toThrow('https://<dns-name> on port 443');
+  });
 });
 it('rechecks OAuth account rules before keeping or replacing a credential', async () => {
   const f = fixture();

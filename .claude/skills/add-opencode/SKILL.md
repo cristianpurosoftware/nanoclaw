@@ -217,8 +217,8 @@ and the configured HTTPS model host belong to OpenCode’s provider contract.
 Iron endpoints must use HTTPS on port 443 with a DNS hostname, including keyless
 self-hosted models; see [Local model behind Iron Proxy](#local-model-behind-iron-proxy).
 The local-endpoint prompt rejects any other URL, and so does an exported
-`OPENCODE_BASE_URL`. It accepts a private name such as `models.home.arpa` with a
-warning.
+`OPENCODE_BASE_URL`. It accepts a private name such as `models.home.arpa`, with a
+warning unless a local CA installed for Iron covers it.
 
 ### Local model behind Iron Proxy
 
@@ -244,6 +244,10 @@ To serve a local OpenAI-compatible server (vLLM, llama.cpp, Ollama, and so on):
    record or a Docker network alias on the Iron network.
 5. Enter `https://models.your-domain.example/v1` at the local-endpoint prompt.
    Setup adds the host to Iron's allowlist.
+
+For a private name such as `models.home.arpa`, use your own name-constrained CA
+instead of a public certificate: see "Trust a local CA" in the add-iron-proxy
+skill.
 
 With the OneCLI gateway selected, grant the group’s OneCLI agent access to the chosen secret.
 Read its existing secret assignments first and merge the new secret ID into that
