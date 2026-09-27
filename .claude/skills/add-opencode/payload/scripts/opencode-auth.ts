@@ -407,6 +407,9 @@ export async function runOpenCodeAuthStep(options: { allowSkip?: boolean } = {})
   };
   checkExportedDefaults(defaults);
   const endpoint = store.modelEndpoint?.(baseUrl || `https://${host}`);
+  // Read structurally: older cores type modelEndpoint() without `warning`.
+  const endpointWarning = (endpoint as { warning?: unknown } | undefined)?.warning;
+  if (typeof endpointWarning === 'string') p.log.warn(brandBody(endpointWarning));
 
   // Guarded model catalogs need the newly entered key before discovery.
   // Keeping a vaulted key never reads it back into the host setup process.

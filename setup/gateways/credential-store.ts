@@ -66,8 +66,11 @@ export interface ProviderCredentialStore {
   save(provider: string, credential: ProviderCredential): Promise<void>;
   /** Caller-described credentials. Absent when the gateway supports only provider-named ones. */
   connection?(target: GatewayCredentialTarget): GatewayCredentialConnection;
-  /** Validate a model endpoint now; route it through the gateway after the user completes setup. */
-  modelEndpoint?(url: string): { configure(): Promise<void> };
+  /**
+   * Validate a model endpoint now; route it through the gateway after the user completes setup.
+   * `warning` names an endpoint the gateway accepts but may be unable to reach as configured.
+   */
+  modelEndpoint?(url: string): { configure(): Promise<void>; warning?: string };
 }
 
 function isFunction(value: unknown): value is (...args: unknown[]) => unknown {

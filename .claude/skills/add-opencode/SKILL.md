@@ -217,16 +217,20 @@ and the configured HTTPS model host belong to OpenCode’s provider contract.
 Iron endpoints must use HTTPS on port 443 with a DNS hostname, including keyless
 self-hosted models; see [Local model behind Iron Proxy](#local-model-behind-iron-proxy).
 The local-endpoint prompt rejects any other URL, and so does an exported
-`OPENCODE_BASE_URL`.
+`OPENCODE_BASE_URL`. It accepts a private name such as `models.home.arpa` with a
+warning.
 
 ### Local model behind Iron Proxy
 
-Iron forwards model traffic only to `https://` URLs on port 443 whose host is a
-DNS name, and it verifies the upstream certificate against public roots. Plain
-HTTP, another port, an IP address, `localhost`, or `host.docker.internal` cannot
-work, and a self-signed or private-CA certificate fails every turn with
-`502 Bad Gateway`. Setup catches the URL shape at the prompt. It warns about an
-untrusted certificate only when it can reach the endpoint to list models.
+NanoClaw's Iron gateway needs the model endpoint as an `https://` URL on port 443
+whose host is a DNS name. Plain HTTP is refused so keys and model replies never
+cross the network unencrypted, and IP addresses are not supported. Iron verifies
+the upstream certificate against public roots by default, so a self-signed or
+private-CA certificate fails every turn with `502 Bad Gateway`. Setup catches the
+URL shape at the prompt and warns about private names (`*.home.arpa`, `*.local`,
+`*.internal`, `host.docker.internal`, and so on), since no public CA certifies
+them. It warns about an untrusted certificate only when it can reach the
+endpoint to list models.
 
 To serve a local OpenAI-compatible server (vLLM, llama.cpp, Ollama, and so on):
 

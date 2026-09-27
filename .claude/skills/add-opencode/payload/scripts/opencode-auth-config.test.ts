@@ -48,8 +48,9 @@ vi.mock('../setup/gateways/credential-store.js', async () => {
       ...(fixture.gateway === 'iron-proxy'
         ? {
             modelEndpoint: (url: string) => {
-              ironModelEndpoint(url, fixture.iron.root);
+              const { warning } = ironModelEndpoint(url, fixture.iron.root);
               return {
+                warning,
                 configure: async () => {
                   fixture.gatewayEndpoints.push(url);
                 },
@@ -545,8 +546,8 @@ describe('OpenCode setup with Iron selected', () => {
     fixture.baseUrlAnswers = ['http://host.docker.internal:8000/v1', 'https://models.example/v1'];
     await runOpenCodeSetupAuth();
     expect(fixture.validationErrors).toHaveLength(1);
-    expect(fixture.validationErrors[0]).toMatch(/HTTPS model endpoint on port 443/);
-    expect(fixture.validationErrors[0]).toMatch(/publicly trusted certificate/);
+    expect(fixture.validationErrors[0]).toMatch(/https:\/\/<dns-name> on port 443/);
+    expect(fixture.validationErrors[0]).toMatch(/certificate Iron trusts/);
     expect(fixture.validationErrors[0]).toMatch(/Local model behind Iron Proxy/);
     expect(fixture.gatewayEndpoints).toEqual(['https://models.example/v1']);
     expect(fixture.writes).toContainEqual(['OPENCODE_BASE_URL', 'https://models.example/v1']);
@@ -555,7 +556,6 @@ describe('OpenCode setup with Iron selected', () => {
     ['plain HTTP', 'http://host.docker.internal:8000/v1'],
     ['HTTPS on another port', 'https://models.example:8443/v1'],
     ['an IP address', 'https://192.168.1.20/v1'],
-    ['a private name', 'https://host.docker.internal/v1'],
   ])('never saves %s, before requesting keys or discovering models', async (_label, url) => {
     fixture.backend = 'local';
     fixture.baseUrl = url;
@@ -575,6 +575,23 @@ describe('OpenCode setup with Iron selected', () => {
     expect(fixture.validationErrors).toEqual([]);
     expect(fixture.gatewayEndpoints).toEqual(['https://models.example:443/v1']);
   });
+  it('accepts a private name but warns that Iron needs a local CA for it', async () => {
+    fixture.backend = 'local';
+    fixture.keyless = true;
+    fixture.baseUrl = 'https://models.home.arpa/v1';
+    await runOpenCodeSetupAuth();
+    expect(fixture.validationErrors).toEqual([]);
+    expect(fixture.warnings.filter((w) => /models\.home\.arpa is a private name/.test(w))).toHaveLength(1);
+    expect(fixture.warnings.join('\n')).toMatch(/unless it trusts your own local CA/);
+    expect(fixture.gatewayEndpoints).toEqual(['https://models.home.arpa/v1']);
+  });
+  it('does not warn about a public DNS name', async () => {
+    fixture.backend = 'local';
+    fixture.keyless = true;
+    fixture.baseUrl = 'https://models.example/v1';
+    await runOpenCodeSetupAuth();
+    expect(fixture.warnings.join('\n')).not.toMatch(/private name/);
+  });
   it('suggests an HTTPS URL in the local endpoint prompt', async () => {
     fixture.backend = 'local';
     fixture.keyless = true;
@@ -585,7 +602,7 @@ describe('OpenCode setup with Iron selected', () => {
     fixture.backend = 'local';
     vi.stubEnv('OPENCODE_BASE_URL', 'http://host.docker.internal:8000/v1');
     await expect(runOpenCodeSetupAuth()).rejects.toThrow(
-      /exported OPENCODE_BASE_URL.*HTTPS model endpoint on port 443/s,
+      /exported OPENCODE_BASE_URL.*https:\/\/<dns-name> on port 443/s,
     );
     expect(fixture.placeholders).toEqual([]);
     expect(fixture.writes).toEqual([]);

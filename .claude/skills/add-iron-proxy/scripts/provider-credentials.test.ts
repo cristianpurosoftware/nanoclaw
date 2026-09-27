@@ -260,30 +260,41 @@ it.each([
   'http://models.example.test/v1',
   'https://models.example.test:8000/v1',
   'https://192.168.1.20/v1',
-  'https://host.docker.internal/v1',
-  'https://llm.local/v1',
-  'https://home.arpa/v1',
-  'https://llm.home.arpa/v1',
-  'https://ollama.home/v1',
-  'https://models.corp/v1',
+  'https://[fd00::1]/v1',
+  'https://localhost/v1',
 ])('rejects unsupported model endpoint %s before changing configuration', (url) => {
   const f = fixture();
-  expect(() => ironModelEndpoint(url, f.root)).toThrow('HTTPS model endpoint on port 443');
+  expect(() => ironModelEndpoint(url, f.root)).toThrow('https://<dns-name> on port 443');
   expect(f.allowHost).not.toHaveBeenCalled();
 });
-it('names what Iron needs when it refuses a model endpoint', () => {
+it("says the endpoint rule is NanoClaw's and why plain HTTP is refused", () => {
   const f = fixture();
   expect(() => ironModelEndpoint('http://host.docker.internal:8000/v1', f.root)).toThrow(
-    /port 443 whose host is a DNS name with a publicly trusted certificate/,
+    /^NanoClaw's Iron gateway .*certificate Iron trusts.*never cross the network unencrypted/,
   );
 });
 it.each(['https://models.example.test/v1', 'https://models.example.test:443/v1'])(
-  'accepts the HTTPS endpoint %s',
+  'accepts the HTTPS endpoint %s without a warning',
   (url) => {
     const f = fixture();
-    expect(() => ironModelEndpoint(url, f.root)).not.toThrow();
+    expect(ironModelEndpoint(url, f.root).warning).toBeUndefined();
   },
 );
+it.each([
+  ['host.docker.internal', 'https://host.docker.internal/v1'],
+  ['llm.local', 'https://llm.local/v1'],
+  ['home.arpa', 'https://home.arpa/v1'],
+  ['llm.home.arpa', 'https://llm.home.arpa:443/v1'],
+  ['ollama.home', 'https://ollama.home/v1'],
+  ['models.corp', 'https://models.corp/v1'],
+])('accepts the private name %s with a local-CA warning', (host, url) => {
+  const f = fixture();
+  const endpoint = ironModelEndpoint(url, f.root);
+  expect(endpoint.warning).toBe(
+    `${host} is a private name. No public CA issues certificates for it, so Iron will refuse the connection unless it trusts your own local CA.`,
+  );
+  expect(f.allowHost).not.toHaveBeenCalled();
+});
 it('rechecks OAuth account rules before keeping or replacing a credential', async () => {
   const f = fixture();
   const c = f.connect(oauth);

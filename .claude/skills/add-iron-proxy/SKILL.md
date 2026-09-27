@@ -142,8 +142,10 @@ model hostname. Rotation and reauthentication keep IDs and grants. Moving a key
 to another host requires confirmation and re-entering its value.
 
 Native backends and custom/keyless HTTPS endpoints on port 443 are supported.
-Use a DNS name and a publicly trusted certificate for local models; setup rejects
-plain HTTP, other ports, IP addresses, and private names at the prompt. The
+This is NanoClaw's rule for the Iron gateway, not a limit of Iron itself. Use a
+DNS name and a certificate Iron trusts (public CAs by default) for local models;
+setup rejects plain HTTP, other ports, and IP addresses at the prompt, and warns
+about private names such as `*.home.arpa`, which no public CA certifies. The
 OpenCode skill's "Local model behind Iron Proxy" section has a recipe. Follow the OpenCode skill to restart the host and test a real reply.
 
 ## Remove
