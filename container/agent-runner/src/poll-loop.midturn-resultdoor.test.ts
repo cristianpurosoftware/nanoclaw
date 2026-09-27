@@ -666,11 +666,36 @@ describe('DB-visible sends gate the nudge', () => {
       yield { type: 'result', text: 'Replied via the tool.' };
     }
     const { query, pushes } = makeStubQuery(events());
-    const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent' };
+    const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent', agentOnly: true };
 
     await processQuery(query, agentRouting, ['m1'], 'opencode', undefined, 'prompt', undefined, false);
 
     expect(nudges(pushes)).toHaveLength(0);
+  });
+
+  it('a batch led by an agent row but carrying a user row: an a2a send is not the user reply', async () => {
+    seedDest();
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 's1' };
+      const { writeMessageOut } = await import('./db/messages-out.js');
+      writeMessageOut({
+        id: 'a2a-1',
+        kind: 'chat',
+        platform_id: 'ag-worker',
+        channel_type: 'agent',
+        thread_id: null,
+        content: JSON.stringify({ text: 'Check the arithmetic.' }),
+      });
+      yield { type: 'result', text: 'The answer is 4.' };
+    }
+    const { query, pushes } = makeStubQuery(events());
+    // extractRouting of [agent row, user row]: routing follows the first row,
+    // but the batch is not agent-only.
+    const mixedRouting = { ...CHAT_ROUTING, platformId: 'ag-worker', channelType: 'agent', agentOnly: false };
+
+    await processQuery(query, mixedRouting, ['m1'], 'opencode', undefined, 'prompt', undefined, false);
+
+    expect(nudges(pushes)).toHaveLength(1);
   });
 
   it('still nudges a result-door provider whose turn delivered nothing', async () => {

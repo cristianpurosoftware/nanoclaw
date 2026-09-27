@@ -624,7 +624,7 @@ export async function processQuery(
             // be nudged into repeating itself over unwrapped closing prose.
             // When false and the result still carries content, the
             // wrap-nudge fires so the model re-sends.
-            turnDelivered: midTurnSent > 0 || chatRowWrittenSince(turnStartSeq, routing.channelType === 'agent'),
+            turnDelivered: midTurnSent > 0 || chatRowWrittenSince(turnStartSeq, routing.agentOnly === true),
           });
           // Completed partial output remains deliverable, but an explicit
           // provider failure must keep its status and never trigger a retry.
@@ -1016,8 +1016,9 @@ function maxOutboundSeq(): number {
  * this also sees MCP send_message / send_file deliveries made this turn, so
  * an agent that already replied via tools is not nudged into repeating
  * itself. Reactions do not count as a reply, and neither does a message to
- * another agent unless this turn is itself an agent wake: on a user-facing
- * turn an a2a send is delegation, and the user's answer is still owed. Fail-open to false: if the lookup breaks, the nudge may fire
+ * another agent unless every row in the batch came from an agent: with any
+ * user row in the batch an a2a send is delegation, and the user's answer is
+ * still owed. Fail-open to false: if the lookup breaks, the nudge may fire
  * spuriously (a repeat coax), never silently swallow an undelivered turn.
  */
 function chatRowWrittenSince(afterSeq: number, countAgentRows: boolean): boolean {
