@@ -557,8 +557,8 @@ describe('cross-segment echo guard', () => {
 // The delivered-reply check is shared by both delivery modes, so the rules
 // for what counts as a reply are pinned for each.
 const PROVIDER_MODES: Array<[string, boolean]> = [
-  ['claude', true],
-  ['opencode', false],
+  ['mid-turn-provider', true],
+  ['result-provider', false],
 ];
 
 describe('DB-visible sends gate the nudge', () => {
@@ -608,7 +608,7 @@ describe('DB-visible sends gate the nudge', () => {
     }
     const { query, pushes } = makeStubQuery(events());
 
-    await processQuery(query, CHAT_ROUTING, ['m1'], 'opencode', undefined, 'prompt', undefined, false);
+    await processQuery(query, CHAT_ROUTING, ['m1'], 'result-provider', undefined, 'prompt', undefined, false);
 
     expect(deliveredTexts()).toEqual(['sent via tool']);
     expect(nudges(pushes)).toHaveLength(0);
@@ -726,7 +726,7 @@ describe('DB-visible sends gate the nudge', () => {
     }
     const { query, pushes } = makeStubQuery(events());
 
-    await processQuery(query, CHAT_ROUTING, ['m1'], 'opencode', undefined, 'prompt', undefined, false);
+    await processQuery(query, CHAT_ROUTING, ['m1'], 'result-provider', undefined, 'prompt', undefined, false);
 
     expect(deliveredTexts()).toEqual([]);
     expect(nudges(pushes)).toHaveLength(1);
@@ -821,8 +821,8 @@ class AgentReplyProvider extends MockProvider {
 
 describe('runner commands in the batch', () => {
   it.each([
-    ['claude', 'mid-turn-complete'],
-    ['opencode', 'result'],
+    ['mid-turn-provider', 'mid-turn-complete'],
+    ['result-provider', 'result'],
   ] as const)('a /clear riding with an agent request does not nudge the a2a reply (%s)', async (name, textDelivery) => {
     const insert = getInboundDb().prepare(
       `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, content)
