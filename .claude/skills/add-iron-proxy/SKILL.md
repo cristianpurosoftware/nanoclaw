@@ -142,6 +142,8 @@ model hostname. Rotation and reauthentication keep IDs and grants. Moving a key
 to another host requires confirmation and re-entering its value.
 
 Native backends and custom/keyless HTTPS endpoints on port 443 are supported.
+Setup adds the model host to the front proxy's allowlist once prompts complete,
+even for a keyless endpoint, which creates no credential.
 This is NanoClaw's rule for the Iron gateway, not a limit of Iron itself. Use a
 DNS name and a certificate Iron trusts (public CAs by default) for local models;
 setup rejects plain HTTP, other ports, and IP addresses at the prompt, and warns
