@@ -103,7 +103,8 @@ Gateway endpoint validation happens before key prompts or catalog requests.
 The selected gateway may refuse an endpoint through the seam's
 `modelEndpoint()`; OpenCode shows its reason as is, keyless endpoints included.
 The gateway permits the model destination only after prompts complete. Native
-model domains and an operator-configured HTTPS model host are declared by the
+model domains and an operator-configured HTTPS model host (or, for an endpoint
+with an explicit port, its exact `host:port`) are declared by the
 OpenCode host contract on startup; explicit gateway policy holds remain in force.
 Restart the host after changing backend settings. Defaults are saved only after
 credentials and routing succeed. Exported setting conflicts are checked before

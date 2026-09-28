@@ -11,16 +11,15 @@ const NATIVE_MODEL_DOMAINS = [
   'api.anthropic.com',
 ];
 
+function configuredEndpoint(): string | undefined {
+  const env = readEnvFile(['OPENCODE_BASE_URL', 'ANTHROPIC_BASE_URL']);
+  return (
+    process.env.OPENCODE_BASE_URL ?? env.OPENCODE_BASE_URL ?? process.env.ANTHROPIC_BASE_URL ?? env.ANTHROPIC_BASE_URL
+  );
+}
+
 /** Operator-owned endpoint settings are realized when the host starts. */
-export function openCodeModelDomains(endpoint?: string): string[] {
-  if (endpoint === undefined) {
-    const env = readEnvFile(['OPENCODE_BASE_URL', 'ANTHROPIC_BASE_URL']);
-    endpoint =
-      process.env.OPENCODE_BASE_URL ??
-      env.OPENCODE_BASE_URL ??
-      process.env.ANTHROPIC_BASE_URL ??
-      env.ANTHROPIC_BASE_URL;
-  }
+export function openCodeModelDomains(endpoint = configuredEndpoint()): string[] {
   const domains = [...NATIVE_MODEL_DOMAINS];
   if (endpoint && endpoint !== 'native') {
     try {
@@ -42,11 +41,36 @@ export function openCodeModelDomains(endpoint?: string): string[] {
   return [...new Set(domains)];
 }
 
+/**
+ * An endpoint with an explicit port, such as a model server on the host, is
+ * declared as its exact host:port; the selected gateway decides the scheme.
+ */
+export function openCodeModelAuthorities(endpoint = configuredEndpoint()): string[] {
+  if (!endpoint || endpoint === 'native') return [];
+  try {
+    const url = new URL(endpoint);
+    if (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      url.port &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(url.hostname)
+    )
+      return [`${url.hostname}:${url.port}`];
+  } catch {
+    /* Invalid endpoints are diagnosed by provider configuration. */
+  }
+  return [];
+}
+
 registerProviderHostContract('opencode', {
   seamVersion: 1,
   legacyHostAdapter: 'required',
   ...CLAUDE_COMPATIBLE_HOST_SURFACES,
   modelDomains: openCodeModelDomains(),
+  modelAuthorities: openCodeModelAuthorities(),
   stateVolumes: [
     ...CLAUDE_COMPATIBLE_HOST_SURFACES.stateVolumes,
     {

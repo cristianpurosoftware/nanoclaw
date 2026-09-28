@@ -213,7 +213,8 @@ candidate; old containers retain their mounts until recreated.
 With Iron Proxy, setup grants both the model credential and any account header
 to this installation’s principal. It reconciles the destination allowlist without
 installing OneCLI or reading `ONECLI_URL` / `ONECLI_API_KEY`. Native model domains
-and the configured HTTPS model host belong to OpenCode’s provider contract.
+and the configured model host (its exact `host:port` when the URL names a port)
+belong to OpenCode’s provider contract.
 
 The selected gateway may limit which model endpoints it can reach. The
 local-endpoint prompt shows the gateway's reason and asks again, and setup stops
