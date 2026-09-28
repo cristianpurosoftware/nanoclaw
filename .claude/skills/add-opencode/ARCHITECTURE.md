@@ -100,8 +100,8 @@ file is removed before network waits and on failure; agents receive only fixed
 placeholders. Existing OneCLI credential names and formats remain compatible.
 
 Gateway endpoint validation happens before key prompts or catalog requests.
-NanoClaw's Iron gateway requires HTTPS on port 443 and DNS names, including for
-keyless endpoints; it accepts private names with a warning.
+The selected gateway may refuse an endpoint or accept it with a warning, through
+the seam's `modelEndpoint()`; OpenCode shows either as is, keyless endpoints included.
 The gateway permits the model destination only after prompts complete. Native
 model domains and an operator-configured HTTPS model host are declared by the
 OpenCode host contract on startup; explicit gateway policy holds remain in force.

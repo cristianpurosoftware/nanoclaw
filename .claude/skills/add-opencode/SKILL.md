@@ -214,40 +214,11 @@ With Iron Proxy, setup grants both the model credential and any account header
 to this installation’s principal. It reconciles the destination allowlist without
 installing OneCLI or reading `ONECLI_URL` / `ONECLI_API_KEY`. Native model domains
 and the configured HTTPS model host belong to OpenCode’s provider contract.
-Iron endpoints must use HTTPS on port 443 with a DNS hostname, including keyless
-self-hosted models; see [Local model behind Iron Proxy](#local-model-behind-iron-proxy).
-The local-endpoint prompt rejects any other URL, and so does an exported
-`OPENCODE_BASE_URL`. It accepts a private name such as `models.home.arpa`, with a
-warning unless a local CA installed for Iron covers it.
 
-### Local model behind Iron Proxy
-
-NanoClaw's Iron gateway needs the model endpoint as an `https://` URL on port 443
-whose host is a DNS name. Plain HTTP is refused so keys and model replies never
-cross the network unencrypted, and IP addresses are not supported. Iron verifies
-the upstream certificate against public roots by default, so a self-signed or
-private-CA certificate fails every turn with `502 Bad Gateway`. Setup catches the
-URL shape at the prompt and warns about private names (`*.home.arpa`, `*.local`,
-`*.internal`, `host.docker.internal`, and so on), since no public CA certifies
-them. It warns about an untrusted certificate only when it can reach the
-endpoint to list models.
-
-To serve a local OpenAI-compatible server (vLLM, llama.cpp, Ollama, and so on):
-
-1. Pick a DNS name you control, for example `models.your-domain.example`.
-2. Get a publicly trusted certificate for it, for example from Let's Encrypt with
-   a DNS-01 challenge, which works for names that are not reachable from the
-   internet.
-3. Run a TLS reverse proxy (Caddy, nginx, or similar) on port 443 with that
-   certificate, forwarding to the local server's plain HTTP port.
-4. Make the name resolve to that proxy from inside Iron's network, through a DNS
-   record or a Docker network alias on the Iron network.
-5. Enter `https://models.your-domain.example/v1` at the local-endpoint prompt.
-   Setup adds the host to Iron's allowlist.
-
-For a private name such as `models.home.arpa`, use your own name-constrained CA
-instead of a public certificate: see "Trust a local CA" in the add-iron-proxy
-skill.
+The selected gateway may limit which model endpoints it can reach. The
+local-endpoint prompt shows the gateway's reason and asks again, and setup stops
+on an exported `OPENCODE_BASE_URL` the gateway refuses. The gateway's skill
+explains how to serve a local model through it.
 
 With the OneCLI gateway selected, grant the group’s OneCLI agent access to the chosen secret.
 Read its existing secret assignments first and merge the new secret ID into that
