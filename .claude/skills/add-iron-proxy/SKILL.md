@@ -147,8 +147,29 @@ even for a keyless endpoint, which creates no credential.
 This is NanoClaw's rule for the Iron gateway, not a limit of Iron itself. Use a
 DNS name and a certificate Iron trusts (public CAs by default) for local models;
 setup rejects plain HTTP, other ports, and IP addresses at the prompt, and warns
-about private names such as `*.home.arpa`, which no public CA certifies. The
-OpenCode skill's "Local model behind Iron Proxy" section has a recipe. Follow the OpenCode skill to restart the host and test a real reply.
+about private names such as `*.home.arpa`, which no public CA certifies. See
+[Serve a local model](#serve-a-local-model). Follow the OpenCode skill to restart the host and test a real reply.
+
+### Serve a local model
+
+Iron verifies the upstream certificate against public roots by default, so a
+self-signed or private-CA certificate fails every turn with `502 Bad Gateway`. A provider's
+endpoint prompt (such as OpenCode's local endpoint) catches the URL shape. Setup
+warns about an untrusted certificate only when it can reach the endpoint to list
+models.
+
+To serve a local OpenAI-compatible server (vLLM, llama.cpp, Ollama, and so on):
+
+1. Pick a DNS name you control, for example `models.your-domain.example`.
+2. Get a publicly trusted certificate for it, for example from Let's Encrypt with
+   a DNS-01 challenge, which works for names that are not reachable from the
+   internet.
+3. Run a TLS reverse proxy (Caddy, nginx, or similar) on port 443 with that
+   certificate, forwarding to the local server's plain HTTP port.
+4. Make the name resolve to that proxy from inside Iron's network, through a DNS
+   record or a Docker network alias on the Iron network.
+5. Enter `https://models.your-domain.example/v1` at the provider's endpoint
+   prompt. Setup adds the host to Iron's allowlist.
 
 ## Remove
 
