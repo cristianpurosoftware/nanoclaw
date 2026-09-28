@@ -81,7 +81,7 @@ pnpm exec vitest run src/gateway-providers/iron-proxy.test.ts src/gateway-provid
 
 The setup consumer writes `NANOCLAW_GATEWAY_PROVIDER=iron-proxy` only after every directive succeeds. Restart only this copy's NanoClaw service after an upgrade so its session contribution and approval bridge match the new installation. Check the proxy has synced its assigned principal before reporting the gateway ready.
 
-The request order is front identity and allowlist → human approval → stock Iron credentials → upstream. The front also requires an explicit response decision before returning upstream data. HTTPS tunnels pin the target authority; each inner HTTP request is checked again. Streaming responses and WebSocket upgrades use this same request/response gate. Credentialed application requests use HTTPS; the approval bridge rejects plaintext HTTP destinations. Do not rewrite an HTTP request’s approval metadata as HTTPS to bypass that restriction. The bridge forwards every allowed HTTP request to core as a default approval request. Core uses the active agent provider’s model-domain declaration to permit model traffic without a card; other destinations retain human approval. CONNECT verifies identity; the inner HTTP request is the approval point. Existing standalone model credentials are moved into Iron Control during setup and removed from the old secret file after successful storage and grant.
+The request order is front identity and allowlist → human approval → stock Iron credentials → upstream. The front also requires an explicit response decision before returning upstream data. HTTPS tunnels pin the target authority; each inner HTTP request is checked again. Streaming responses and WebSocket upgrades use this same request/response gate. Credentialed application requests use HTTPS; the approval bridge rejects plaintext HTTP destinations, except one keyless model on this machine pinned by host and port (see [Serve a local model](#serve-a-local-model)). Do not rewrite an HTTP request’s approval metadata as HTTPS to bypass that restriction. The bridge forwards every allowed HTTP request to core as a default approval request. Core uses the active agent provider’s model-domain declaration to permit model traffic without a card; other destinations retain human approval. CONNECT verifies identity; the inner HTTP request is the approval point. Existing standalone model credentials are moved into Iron Control during setup and removed from the old secret file after successful storage and grant.
 
 ## Open and use the official console
 
@@ -145,11 +145,33 @@ Native backends and custom/keyless HTTPS endpoints on port 443 are supported.
 Setup adds the model host to the front proxy's allowlist once prompts complete,
 even for a keyless endpoint, which creates no credential.
 This is NanoClaw's rule for the Iron gateway, not a limit of Iron itself. Iron
-trusts only public CAs, so setup refuses plain HTTP, other ports, IP addresses
-and private names such as `*.home.arpa` at the prompt: an https endpoint on a
-private name would pass setup and then fail every turn with `502 Bad Gateway`.
-Setup reports why it could not list models (for example a self-signed
-certificate) when it can reach the endpoint. Follow the OpenCode skill to restart the host and test a real reply.
+trusts only public CAs, so setup refuses plain HTTP (except below), other ports,
+IP addresses and private names such as `*.home.arpa` at the prompt: an https
+endpoint on a private name would pass setup and then fail every turn with
+`502 Bad Gateway`. Setup reports why it could not list models (for example a
+self-signed certificate) when it can reach the endpoint. Follow the OpenCode skill to restart the host and test a real reply.
+
+### Serve a local model
+
+A keyless model server on this machine (vLLM, llama.cpp, Ollama, and so on) can
+be reached over plain HTTP at `http://host.docker.internal:<port>/v1`. Its
+prompts and replies never leave the machine, and it has no key to protect.
+Traffic still goes through Iron, and egress lockdown stays on.
+
+1. Start the server on a fixed port. On Docker Desktop (macOS, Windows) it can
+   listen on `127.0.0.1`. On Linux, `host.docker.internal` is the Docker bridge
+   gateway, so the server must listen on that address (often `172.17.0.1`) or on
+   all interfaces.
+2. Enter `http://host.docker.internal:<port>/v1` at the provider's endpoint
+   prompt, and answer that it works without an API key.
+3. Restart the host as the provider skill describes.
+
+Setup pins exactly that host and port: other ports on this machine stay
+unreachable, and HTTPS to it is refused. Only one such endpoint is kept; entering
+another replaces it, and `setup.ts --clear-plaintext-model` removes it. Iron
+refuses a key for `host.docker.internal`, because it injects keys by host
+whatever the scheme. A model that needs a key must use an https endpoint on a
+public DNS name.
 
 ## Remove
 

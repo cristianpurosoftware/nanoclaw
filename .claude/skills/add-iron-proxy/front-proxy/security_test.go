@@ -622,3 +622,42 @@ func mustURL(raw string) *url.URL {
 	}
 	return u
 }
+func TestPlaintextOriginPinsHostAndPort(t *testing.T) {
+	var hits atomic.Int32
+	g, _ := fixture(t, &fixtureBridge{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); w.WriteHeader(200) }))
+	g.cfg.PlaintextOrigins = []string{"host.docker.internal:8000"}
+	send := func(method, target string) int {
+		r := httptest.NewRequest(method, target, nil)
+		r.Header.Set("Proxy-Authorization", auth(g, "session-A"))
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := send("GET", "http://host.docker.internal:8000/v1/models"); code != 200 || hits.Load() != 1 {
+		t.Fatalf("pinned origin: status=%d upstream=%d", code, hits.Load())
+	}
+	for _, target := range []string{"http://host.docker.internal:8001/v1/models", "http://host.docker.internal/v1/models", "http://sub.host.docker.internal:8000/v1/models"} {
+		if code := send("GET", target); code != 403 {
+			t.Fatalf("%s: status=%d", target, code)
+		}
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("CONNECT", "host.docker.internal:8000", nil)
+	r.Host = "host.docker.internal:8000"
+	r.Header.Set("Proxy-Authorization", auth(g, "session-A"))
+	g.ServeHTTP(w, r)
+	if w.Code != 403 || hits.Load() != 1 {
+		t.Fatalf("https to a plaintext origin: status=%d upstream=%d", w.Code, hits.Load())
+	}
+}
+
+func TestPlaintextOriginsNeedAnExplicitPort(t *testing.T) {
+	for _, origin := range []string{"host.docker.internal", "Host.Docker.Internal:8000", "host.docker.internal:", "host.docker.internal:8000/v1"} {
+		g, _ := fixture(t, &fixtureBridge{}, http.NotFoundHandler())
+		cfg := g.cfg
+		cfg.PlaintextOrigins = []string{origin}
+		if _, err := newGateway(cfg, &fixtureBridge{}); err == nil {
+			t.Fatalf("accepted %q", origin)
+		}
+	}
+}

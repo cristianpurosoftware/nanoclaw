@@ -121,6 +121,25 @@ describe('Iron Proxy provider', () => {
     expect(front).toEqual(JSON.parse(ironFrontConfig(settings)));
   });
 
+  it('pins a keyless local model origin in the front and refuses a bad plaintext file', () => {
+    const file = path.join(path.dirname(settings.allowedHostsFile), 'plaintext-models.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    try {
+      expect(JSON.parse(ironFrontConfig(settings)).plaintext_origins).toEqual([]);
+      fs.writeFileSync(file, JSON.stringify(['host.docker.internal:8000']));
+      const front = JSON.parse(ironFrontConfig(settings));
+      expect(front.plaintext_origins).toEqual(['host.docker.internal:8000']);
+      expect(front.allowed_hosts).not.toContain('host.docker.internal');
+      for (const bad of [['host.docker.internal'], ['models.example.test:8000'], ['a', 'b'], 'x'])
+        expect(() => {
+          fs.writeFileSync(file, JSON.stringify(bad));
+          ironFrontConfig(settings);
+        }).toThrow('Invalid Iron Proxy plaintext model file');
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
   it('uses the configured port for the front listener and agent URL only', () => {
     const configured = readIronProxySettings({ NANOCLAW_IRON_PROXY_PORT: '18081' }, root);
     fs.mkdirSync(path.dirname(configured.identityKey), { recursive: true });

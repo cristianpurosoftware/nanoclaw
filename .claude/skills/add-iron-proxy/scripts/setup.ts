@@ -53,6 +53,7 @@ export function statePaths(projectRoot = process.cwd()) {
     frontConfigFile: path.join(shared, 'front.json'),
     identityKey: path.join(shared, 'workload-identity.key'),
     allowedHosts: path.join(shared, 'allowed-hosts.json'),
+    plaintextModels: path.join(shared, 'plaintext-models.json'),
     agentCaCert: path.join(projectRoot, 'data', 'gateway-trust', 'iron-proxy', 'ca.crt'),
     containerName: `nanoclaw-iron-proxy-${getInstallSlug(projectRoot)}`,
   };
@@ -64,6 +65,15 @@ export function validateAllowedHost(raw: string): string {
     throw new Error(`Invalid allowed host: ${raw}`);
   }
   return host;
+}
+
+/** Plain HTTP is allowed only to a keyless model on this machine, pinned to one port. */
+export function validatePlaintextModel(raw: string): string {
+  const origin = raw.trim().toLowerCase();
+  const match = /^host\.docker\.internal:([1-9][0-9]{0,4})$/.exec(origin);
+  if (!match || Number(match[1]) > 65535)
+    throw new Error(`A plaintext model endpoint must be host.docker.internal:<port>; got ${raw}`);
+  return origin;
 }
 
 function readAllowedHosts(projectRoot: string): string[] {
@@ -268,6 +278,12 @@ export async function run(args: string[], projectRoot = process.cwd()): Promise<
     allowed.push(validateAllowedHost(args[allowIndex + 1]));
   }
   writeAllowedHosts(allowed, projectRoot);
+  const plaintextIndex = args.indexOf('--allow-plaintext-model');
+  if (plaintextIndex >= 0 || args.includes('--clear-plaintext-model')) {
+    const origins = plaintextIndex >= 0 ? [validatePlaintextModel(args[plaintextIndex + 1] ?? '')] : [];
+    fs.writeFileSync(paths.plaintextModels, `${JSON.stringify(origins)}\n`, { mode: 0o600 });
+    fs.chmodSync(paths.plaintextModels, 0o600);
+  }
   if (!IMAGE.startsWith('sha256:')) await docker(['pull', IMAGE]);
   await ensureCA(projectRoot);
   ensureIdentityKey(projectRoot);
