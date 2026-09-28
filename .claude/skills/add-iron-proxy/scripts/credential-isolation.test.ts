@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { assertCredentialIsolation } from './credential-isolation.js';
+import { assertCredentialIsolation, assertNoCredentialCovers } from './credential-isolation.js';
 import { controlPaths } from './control.js';
 import { getInstallSlug } from '../../../../src/install-slug.js';
 const roots: string[] = [];
@@ -122,4 +122,23 @@ it('rejects another marker with a noncanonical shared account header', async () 
     },
   ]);
   await expect(f.check({ host: 'chatgpt.com', headers: ['ChatGPT-Account-Id'] })).rejects.toThrow('conflicts');
+});
+
+it.each([
+  ['an exact rule', [{ host: 'host.docker.internal' }]],
+  ['a wildcard rule', [{ host: '*.docker.internal' }]],
+  ['a catch-all rule', [{ host: '*' }]],
+  ['a CIDR rule', [{ cidr: '0.0.0.0/0' }]],
+  ['no rules at all', []],
+])('refuses plain HTTP when any granted credential applies to the host: %s', async (_label, rules) => {
+  const f = fixture([
+    { rules, namespace: getInstallSlug('/tmp'), replace_config: { proxy_value: 'x', match_headers: ['X-Other'] } },
+  ]);
+  await expect(assertNoCredentialCovers(f.root, 'host.docker.internal', f.request)).rejects.toThrow(
+    'applies to host.docker.internal',
+  );
+});
+it.each([false, true])('allows plain HTTP when no granted credential applies (inherited=%s)', async (inherited) => {
+  const f = fixture([{ rules: [{ host: 'api.openai.com' }] }], inherited);
+  await expect(assertNoCredentialCovers(f.root, 'host.docker.internal', f.request)).resolves.toBeUndefined();
 });

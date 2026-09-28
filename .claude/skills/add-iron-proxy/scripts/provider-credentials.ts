@@ -10,11 +10,11 @@ import { controlPaths, controlRequest, grantSecret, IronControlRequestError } fr
 import { run, statePaths } from './setup.js';
 import { assertCredentialIsolation, ironHeaderName } from './credential-isolation.js';
 
-/** One pinned keyless model on this machine; replaces any earlier one. */
+/**
+ * One pinned keyless model on this machine; replaces any earlier one. Setup always
+ * reruns, so a failed earlier attempt cannot leave the proxy unconfigured.
+ */
 export async function allowPlaintextModel(origin: string, root: string): Promise<void> {
-  const file = statePaths(root).plaintextModels;
-  if (fs.existsSync(file) && JSON.stringify(JSON.parse(fs.readFileSync(file, 'utf8'))) === JSON.stringify([origin]))
-    return;
   await run(['--allow-plaintext-model', origin], root);
 }
 

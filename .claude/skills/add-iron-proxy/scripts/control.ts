@@ -213,6 +213,13 @@ export async function grantSecret(kind: string, id: string, root = process.cwd()
     hmac: 'hmac_secret_id',
   };
   if (!fields[kind]) throw new Error('Secret kind must be static, gcp, aws, oauth, postgres, or hmac');
+  // Every grant path, the manual one included, must keep keys off a plain-HTTP host.
+  // PostgreSQL DSNs never reach an HTTP request.
+  if (kind !== 'postgres') {
+    const secret = await controlRequest(root, `${fields[kind].replace(/_id$/, 's')}/${encodeURIComponent(id)}`);
+    const { assertNoPlaintextOverlap } = await import('./setup.js');
+    for (const rule of secret.rules?.length ? secret.rules : [{ cidr: 'any' }]) assertNoPlaintextOverlap(rule, root);
+  }
   const { principalId } = JSON.parse(fs.readFileSync(controlPaths(root).registration, 'utf8'));
   for (let page = 1; ; page++) {
     const grants = await controlRequest(root, `principals/${principalId}/grants?limit=200&page=${page}`);

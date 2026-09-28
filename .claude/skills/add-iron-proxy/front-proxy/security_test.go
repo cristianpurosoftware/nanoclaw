@@ -651,6 +651,28 @@ func TestPlaintextOriginPinsHostAndPort(t *testing.T) {
 	}
 }
 
+func TestPlaintextOriginOverridesAnOlderHostAllowEntry(t *testing.T) {
+	var hits atomic.Int32
+	g, _ := fixture(t, &fixtureBridge{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); w.WriteHeader(200) }))
+	g.cfg.AllowedHosts = append(g.cfg.AllowedHosts, "host.docker.internal")
+	g.cfg.PlaintextOrigins = []string{"host.docker.internal:8000"}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("CONNECT", "host.docker.internal:8443", nil)
+	r.Host = "host.docker.internal:8443"
+	r.Header.Set("Proxy-Authorization", auth(g, "session-A"))
+	g.ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Fatalf("CONNECT to another port: status=%d", w.Code)
+	}
+	r = httptest.NewRequest("GET", "http://host.docker.internal:9000/", nil)
+	r.Header.Set("Proxy-Authorization", auth(g, "session-A"))
+	w = httptest.NewRecorder()
+	g.ServeHTTP(w, r)
+	if w.Code != 403 || hits.Load() != 0 {
+		t.Fatalf("http to another port: status=%d upstream=%d", w.Code, hits.Load())
+	}
+}
+
 func TestPlaintextOriginsNeedAnExplicitPort(t *testing.T) {
 	for _, origin := range []string{"host.docker.internal", "Host.Docker.Internal:8000", "host.docker.internal:", "host.docker.internal:8000/v1"} {
 		g, _ := fixture(t, &fixtureBridge{}, http.NotFoundHandler())

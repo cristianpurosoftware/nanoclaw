@@ -187,6 +187,13 @@ func authority(raw, scheme string) (string, error) {
 
 func (g *gateway) allowed(host string) bool {
 	host = strings.ToLower(host)
+	// A plaintext origin's host is reachable on its pinned port only, whatever an
+	// older allow entry says.
+	for _, origin := range g.cfg.PlaintextOrigins {
+		if pinned, _, err := net.SplitHostPort(origin); err == nil && pinned == host {
+			return false
+		}
+	}
 	for _, pattern := range g.cfg.AllowedHosts {
 		pattern = strings.ToLower(pattern)
 		if host == pattern {

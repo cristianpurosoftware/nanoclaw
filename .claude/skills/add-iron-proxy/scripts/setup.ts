@@ -12,6 +12,7 @@ import { upsertEnvVar } from '../../../../setup/set-env.js';
 import { installStep, installCommand, InstallCommandFailure } from './install-command.js';
 import { buildManagedProxy, hasFrontProxy } from './build-managed-proxy.js';
 import { controlPaths, installControl, removeControl, storeModelCredential } from './control.js';
+import { assertNoCredentialCovers, ruleCoversHost } from './credential-isolation.js';
 
 const pins = JSON.parse(
   fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'versions.json'), 'utf8'),
@@ -74,6 +75,51 @@ export function validatePlaintextModel(raw: string): string {
   if (!match || Number(match[1]) > 65535)
     throw new Error(`A plaintext model endpoint must be host.docker.internal:<port>; got ${raw}`);
   return origin;
+}
+
+/** The origin this run leaves enabled: the requested one, none when cleared, else the saved one. */
+function plaintextModelAfterRun(args: string[], projectRoot: string): string | undefined {
+  const index = args.indexOf('--allow-plaintext-model');
+  if (index >= 0 && args.includes('--clear-plaintext-model'))
+    throw new Error('--allow-plaintext-model and --clear-plaintext-model cannot be combined');
+  if (args.includes('--clear-plaintext-model')) return undefined;
+  if (index >= 0) return validatePlaintextModel(args[index + 1] ?? '');
+  return savedPlaintextModel(projectRoot);
+}
+
+/**
+ * Refuse a credential rule for a host reachable over plain HTTP, per the saved pin or
+ * the running front's config (a failed run can leave them apart).
+ */
+export function assertNoPlaintextOverlap(rule: { host?: string; cidr?: string }, projectRoot: string): void {
+  const front = statePaths(projectRoot).frontConfigFile;
+  const running = fs.existsSync(front) ? (JSON.parse(fs.readFileSync(front, 'utf8')).plaintext_origins ?? []) : [];
+  for (const origin of [savedPlaintextModel(projectRoot), ...running]) {
+    const host = typeof origin === 'string' ? origin.replace(/:\d+$/, '') : undefined;
+    if (host && ruleCoversHost(rule, host))
+      throw new Error(`${host} is reachable over plain HTTP, so Iron cannot hold a key that applies to it.`);
+  }
+}
+
+function savedPlaintextModel(projectRoot: string): string | undefined {
+  const file = statePaths(projectRoot).plaintextModels;
+  if (!fs.existsSync(file)) return undefined;
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+  if (!Array.isArray(saved) || saved.length > 1) throw new Error(`Invalid Iron Proxy plaintext model file: ${file}`);
+  return saved.length ? validatePlaintextModel(String(saved[0])) : undefined;
+}
+
+/**
+ * Iron injects by host whatever the scheme, so nothing may apply to a host that is
+ * reachable over plain HTTP. Rechecked on every run, refreshes included.
+ */
+async function assertPlaintextModelIsKeyless(origin: string, projectRoot: string): Promise<void> {
+  const host = origin.replace(/:\d+$/, '');
+  const provider = await import('../../../../src/gateway-providers/iron-proxy.js');
+  const modelHost = provider.readIronProxySettings(process.env, projectRoot).modelHost;
+  if (ruleCoversHost({ host: modelHost }, host))
+    throw new Error(`Iron's model credential targets ${modelHost}, so ${host} cannot be reached over plain HTTP.`);
+  if (fs.existsSync(controlPaths(projectRoot).registration)) await assertNoCredentialCovers(projectRoot, host);
 }
 
 function readAllowedHosts(projectRoot: string): string[] {
@@ -221,6 +267,7 @@ export async function configureCredential(
     throw new Error(`Unsupported Iron Proxy auth env: ${credential.authEnv}`);
   }
   if (!credential.secret || /[\r\n]/.test(credential.secret)) throw new Error('Credential must be one non-empty line');
+  assertNoPlaintextOverlap({ host: credential.modelHost }, projectRoot);
   const paths = statePaths(projectRoot);
   if (readProjectEnv(projectRoot).NANOCLAW_IRON_CONTROL_URL) {
     await storeModelCredential(credential.secret, credential.modelHost, projectRoot, credential.authEnv);
@@ -245,12 +292,15 @@ export async function run(args: string[], projectRoot = process.cwd()): Promise<
     return;
   }
   const managed = args.includes('--with-control') || !!readProjectEnv(projectRoot).NANOCLAW_IRON_CONTROL_URL;
+  const plaintextModel = plaintextModelAfterRun(args, projectRoot);
   const localIndex = args.indexOf('--local-image');
   if (managed || localIndex < 0) {
     IMAGE = await buildManagedProxy();
     if (managed) await installControl(projectRoot);
     upsertEnvVar('NANOCLAW_IRON_PROXY_IMAGE', IMAGE, projectRoot);
   }
+  // After installControl, so a stopped Iron Control is started before it is asked.
+  if (plaintextModel) await assertPlaintextModelIsKeyless(plaintextModel, projectRoot);
   const localImage = localIndex >= 0 ? args[localIndex + 1] : readProjectEnv(projectRoot).NANOCLAW_IRON_PROXY_IMAGE;
   if (localImage && (localIndex >= 0 || localImage.startsWith('sha256:'))) {
     const inspected = JSON.parse(await docker(['image', 'inspect', localImage], true))[0];
@@ -278,10 +328,34 @@ export async function run(args: string[], projectRoot = process.cwd()): Promise<
     allowed.push(validateAllowedHost(args[allowIndex + 1]));
   }
   writeAllowedHosts(allowed, projectRoot);
-  const plaintextIndex = args.indexOf('--allow-plaintext-model');
-  if (plaintextIndex >= 0 || args.includes('--clear-plaintext-model')) {
-    const origins = plaintextIndex >= 0 ? [validatePlaintextModel(args[plaintextIndex + 1] ?? '')] : [];
-    fs.writeFileSync(paths.plaintextModels, `${JSON.stringify(origins)}\n`, { mode: 0o600 });
+  // A host-wide allow entry would open every port on a pinned host, over HTTPS too,
+  // and would reopen it once the pin is cleared.
+  const pinnedHost = (plaintextModel ?? savedPlaintextModel(projectRoot))?.replace(/:\d+$/, '');
+  if (pinnedHost)
+    writeAllowedHosts(
+      readAllowedHosts(projectRoot).filter((entry) => entry !== pinnedHost),
+      projectRoot,
+    );
+  // Stop a proxy that may still serve another pin first: if this run stops midway, no
+  // proxy is safer than one whose plain-HTTP route the files no longer show.
+  const running = fs.existsSync(paths.frontConfigFile)
+    ? (JSON.parse(fs.readFileSync(paths.frontConfigFile, 'utf8')).plaintext_origins ?? [])
+    : [];
+  const stale = [savedPlaintextModel(projectRoot), ...running].find((origin) => origin && origin !== plaintextModel);
+  if (stale) {
+    try {
+      await docker(['rm', '-f', paths.containerName]);
+    } catch (error) {
+      if (error instanceof InstallCommandFailure && error.interrupted) throw error;
+      // Only a container that is already gone is fine here.
+      if ((await docker(['ps', '-aq', '--filter', `name=^/${paths.containerName}$`], true)).trim())
+        throw new Error(`Could not stop ${paths.containerName}; its plain-HTTP route to ${stale} is still open.`);
+    }
+  }
+  if (args.includes('--allow-plaintext-model') || args.includes('--clear-plaintext-model')) {
+    fs.writeFileSync(paths.plaintextModels, `${JSON.stringify(plaintextModel ? [plaintextModel] : [])}\n`, {
+      mode: 0o600,
+    });
     fs.chmodSync(paths.plaintextModels, 0o600);
   }
   if (!IMAGE.startsWith('sha256:')) await docker(['pull', IMAGE]);

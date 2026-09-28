@@ -10,7 +10,7 @@ import * as p from '@clack/prompts';
 import { controlPaths, controlRequest, grantSecret, IronControlRequestError } from './control.js';
 import { getInstallSlug } from '../../../../src/install-slug.js';
 import { upsertEnvVar } from '../../../../setup/set-env.js';
-import { configureCredential, statePaths } from './setup.js';
+import { assertNoPlaintextOverlap, configureCredential, statePaths } from './setup.js';
 import { assertCredentialIsolation, ironHeaderName } from './credential-isolation.js';
 
 type Method = 'subscription' | 'oauth' | 'api' | 'skip';
@@ -55,6 +55,7 @@ export async function existingCredential(root = process.cwd()): Promise<boolean>
       credential.replace_config?.match_headers?.some((h: string) => h !== ironHeaderName(h))
     )
       return false;
+    for (const rule of credential.rules ?? []) assertNoPlaintextOverlap(rule, root);
     for (const rule of credential.rules ?? [])
       await assertCredentialIsolation(root, {
         host: rule.host,

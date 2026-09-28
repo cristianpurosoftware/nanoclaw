@@ -169,9 +169,12 @@ Traffic still goes through Iron, and egress lockdown stays on.
 Setup pins exactly that host and port: other ports on this machine stay
 unreachable, and HTTPS to it is refused. Only one such endpoint is kept; entering
 another replaces it, and `setup.ts --clear-plaintext-model` removes it. Iron
-refuses a key for `host.docker.internal`, because it injects keys by host
-whatever the scheme. A model that needs a key must use an https endpoint on a
-public DNS name.
+injects keys by host whatever the scheme, so setup refuses the endpoint while any
+Iron credential applies to `host.docker.internal`, and removes an older host-wide
+allow entry for it. While it is pinned, storing or granting a credential that
+applies to that host is refused, `control.ts grant` included, and changing the pin
+stops the old proxy first. A model that needs a key must use an https endpoint on
+a public DNS name.
 
 ## Remove
 
