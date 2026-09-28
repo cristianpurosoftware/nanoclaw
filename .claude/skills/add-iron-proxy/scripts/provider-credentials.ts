@@ -18,8 +18,8 @@ export async function allowModelHost(host: string, root: string): Promise<void> 
 
 /**
  * Names no public CA certifies, with their subdomains: IANA special-use names and the
- * TLDs ICANN will never delegate (home, corp, mail). Iron trusts public roots by
- * default, so these work only once it also trusts the operator's own CA; warn, not refuse.
+ * TLDs ICANN will never delegate (home, corp, mail). Iron trusts only public roots,
+ * so an https endpoint on one would pass setup and then fail every turn.
  */
 const PRIVATE_NAME = /(?:^|\.)(?:internal|local|localhost|home\.arpa|home|corp|mail)$/;
 
@@ -37,10 +37,11 @@ export function ironModelEndpoint(raw: string, root: string) {
     throw new Error(
       "NanoClaw's Iron gateway needs the model endpoint as https://<dns-name> on port 443, with a certificate Iron trusts (public CAs by default). Plain HTTP is refused so keys and model replies never cross the network unencrypted. IP addresses are not supported. The add-iron-proxy skill explains how to serve a local model.",
     );
-  const warning = PRIVATE_NAME.test(url.hostname)
-    ? `${url.hostname} is a private name. No public CA issues certificates for it, so Iron will refuse the connection unless it trusts your own local CA.`
-    : undefined;
-  return { configure: () => allowModelHost(url.hostname, root), warning };
+  if (PRIVATE_NAME.test(url.hostname))
+    throw new Error(
+      `${url.hostname} is a private name. No public CA issues certificates for it and Iron trusts only public CAs, so every request would fail. The add-iron-proxy skill explains how to serve a local model.`,
+    );
+  return { configure: () => allowModelHost(url.hostname, root) };
 }
 
 /** The header the ChatGPT profile routes on; a property of the profile, not of the caller. */

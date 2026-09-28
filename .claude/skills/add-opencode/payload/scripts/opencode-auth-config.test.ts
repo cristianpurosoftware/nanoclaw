@@ -48,9 +48,8 @@ vi.mock('../setup/gateways/credential-store.js', async () => {
       ...(fixture.gateway === 'iron-proxy'
         ? {
             modelEndpoint: (url: string) => {
-              const { warning } = ironModelEndpoint(url, fixture.iron.root);
+              ironModelEndpoint(url, fixture.iron.root);
               return {
-                warning,
                 configure: async () => {
                   fixture.gatewayEndpoints.push(url);
                 },
@@ -556,6 +555,7 @@ describe('OpenCode setup with Iron selected', () => {
     ['plain HTTP', 'http://host.docker.internal:8000/v1'],
     ['HTTPS on another port', 'https://models.example:8443/v1'],
     ['an IP address', 'https://192.168.1.20/v1'],
+    ['a private name', 'https://models.home.arpa/v1'],
   ])('never saves %s, before requesting keys or discovering models', async (_label, url) => {
     fixture.backend = 'local';
     fixture.baseUrl = url;
@@ -575,23 +575,6 @@ describe('OpenCode setup with Iron selected', () => {
     expect(fixture.validationErrors).toEqual([]);
     expect(fixture.gatewayEndpoints).toEqual(['https://models.example:443/v1']);
   });
-  it('accepts a private name but warns that Iron needs a local CA for it', async () => {
-    fixture.backend = 'local';
-    fixture.keyless = true;
-    fixture.baseUrl = 'https://models.home.arpa/v1';
-    await runOpenCodeSetupAuth();
-    expect(fixture.validationErrors).toEqual([]);
-    expect(fixture.warnings.filter((w) => /models\.home\.arpa is a private name/.test(w))).toHaveLength(1);
-    expect(fixture.warnings.join('\n')).toMatch(/unless it trusts your own local CA/);
-    expect(fixture.gatewayEndpoints).toEqual(['https://models.home.arpa/v1']);
-  });
-  it('does not warn about a public DNS name', async () => {
-    fixture.backend = 'local';
-    fixture.keyless = true;
-    fixture.baseUrl = 'https://models.example/v1';
-    await runOpenCodeSetupAuth();
-    expect(fixture.warnings.join('\n')).not.toMatch(/private name/);
-  });
   it('suggests an HTTPS URL in the local endpoint prompt', async () => {
     fixture.backend = 'local';
     fixture.keyless = true;
@@ -607,27 +590,21 @@ describe('OpenCode setup with Iron selected', () => {
     expect(fixture.placeholders).toEqual([]);
     expect(fixture.writes).toEqual([]);
   });
-  it.each(['DEPTH_ZERO_SELF_SIGNED_CERT', 'INVALID_PURPOSE', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID'])(
-    'warns at setup when the endpoint certificate fails verification (%s)',
-    async (code) => {
-      fixture.backend = 'local';
-      fixture.keyless = true;
-      fixture.modelFetchError = Object.assign(new TypeError('fetch failed'), {
-        cause: Object.assign(new Error('certificate verification failed'), { code }),
-      });
-      await runOpenCodeSetupAuth();
-      expect(fixture.warnings.join('\n')).toMatch(/use a certificate the gateway trusts/);
-    },
-  );
-  it('does not blame the certificate for a connection failure', async () => {
+  it('shows why the model list failed', async () => {
     fixture.backend = 'local';
     fixture.keyless = true;
     fixture.modelFetchError = Object.assign(new TypeError('fetch failed'), {
-      cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+      cause: Object.assign(new Error('self-signed certificate'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }),
     });
     await runOpenCodeSetupAuth();
-    expect(fixture.warnings.join('\n')).toMatch(/Could not list models/);
-    expect(fixture.warnings.join('\n')).not.toMatch(/certificate/);
+    expect(fixture.warnings.join('\n')).toMatch(/Could not list models \(self-signed certificate\)\. Enter a model id/);
+  });
+  it('falls back to the error message when there is no cause', async () => {
+    fixture.backend = 'local';
+    fixture.keyless = true;
+    fixture.modelFetchError = new Error('HTTP 401\nfrom endpoint');
+    await runOpenCodeSetupAuth();
+    expect(fixture.warnings.join('\n')).toMatch(/Could not list models \(HTTP 401 from endpoint\)/);
   });
   it('does not fall back to OneCLI or save defaults after an Iron failure', async () => {
     fixture.failVault = true;

@@ -65,49 +65,6 @@ function gatewayEndpointError(store: ProviderCredentialStore, value: string): st
   }
 }
 
-/**
- * Node's certificate verification codes: X509Pointer::ErrorCode in
- * deps/ncrypto/ncrypto.cc (UNSPECIFIED is its fallback; OUT_OF_MEM is left out),
- * plus the hostname check tls.checkServerIdentity reports.
- */
-const CERTIFICATE_ERROR_CODES = new Set([
-  'UNABLE_TO_GET_ISSUER_CERT',
-  'UNABLE_TO_GET_CRL',
-  'UNABLE_TO_DECRYPT_CERT_SIGNATURE',
-  'UNABLE_TO_DECRYPT_CRL_SIGNATURE',
-  'UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY',
-  'CERT_SIGNATURE_FAILURE',
-  'CRL_SIGNATURE_FAILURE',
-  'CERT_NOT_YET_VALID',
-  'CERT_HAS_EXPIRED',
-  'CRL_NOT_YET_VALID',
-  'CRL_HAS_EXPIRED',
-  'ERROR_IN_CERT_NOT_BEFORE_FIELD',
-  'ERROR_IN_CERT_NOT_AFTER_FIELD',
-  'ERROR_IN_CRL_LAST_UPDATE_FIELD',
-  'ERROR_IN_CRL_NEXT_UPDATE_FIELD',
-  'DEPTH_ZERO_SELF_SIGNED_CERT',
-  'SELF_SIGNED_CERT_IN_CHAIN',
-  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
-  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
-  'CERT_CHAIN_TOO_LONG',
-  'CERT_REVOKED',
-  'INVALID_CA',
-  'PATH_LENGTH_EXCEEDED',
-  'INVALID_PURPOSE',
-  'CERT_UNTRUSTED',
-  'CERT_REJECTED',
-  'HOSTNAME_MISMATCH',
-  'UNSPECIFIED',
-  'ERR_TLS_CERT_ALTNAME_INVALID',
-]);
-
-/** TLS verification failures carry their reason on the fetch error's cause. */
-function isCertificateError(error: unknown): boolean {
-  const code = (error as { cause?: { code?: unknown } })?.cause?.code;
-  return typeof code === 'string' && CERTIFICATE_ERROR_CODES.has(code);
-}
-
 function checkExportedDefaults(defaults: Record<string, string | undefined>): void {
   for (const [name, value] of Object.entries(defaults)) {
     if (process.env[name] !== undefined && process.env[name] !== (value ?? '')) {
@@ -407,9 +364,6 @@ export async function runOpenCodeAuthStep(options: { allowSkip?: boolean } = {})
   };
   checkExportedDefaults(defaults);
   const endpoint = store.modelEndpoint?.(baseUrl || `https://${host}`);
-  // Read structurally: older cores type modelEndpoint() without `warning`.
-  const endpointWarning = (endpoint as { warning?: unknown } | undefined)?.warning;
-  if (typeof endpointWarning === 'string') p.log.warn(brandBody(endpointWarning));
 
   // Guarded model catalogs need the newly entered key before discovery.
   // Keeping a vaulted key never reads it back into the host setup process.
@@ -433,15 +387,17 @@ export async function runOpenCodeAuthStep(options: { allowSkip?: boolean } = {})
           : (await discoverLocalModelIds(baseUrl, globalThis.fetch, pendingKey?.key)).map((id) => `${provider}/${id}`)
         : discoverRuntimeModels(provider, true, backend === 'chatgpt');
     } catch (error) {
-      p.log.warn(brandBody('Could not list models. Enter a model id manually; no built-in model list is substituted.'));
-      // The catalog request is the only TLS contact setup makes. The host's DNS and
-      // trust store can differ from the gateway's, so this warns rather than refuses.
-      if (isCertificateError(error))
-        p.log.warn(
-          brandBody(
-            "This host did not trust the endpoint's certificate. If your gateway verifies upstream TLS and does not trust it either, every request will fail; use a certificate the gateway trusts.",
-          ),
-        );
+      // fetch() hides the reason (e.g. "self-signed certificate") in its cause.
+      const reason = String(
+        (error as { cause?: { message?: unknown } })?.cause?.message ?? (error as Error)?.message ?? '',
+      )
+        .replace(/\s+/g, ' ')
+        .slice(0, 200);
+      p.log.warn(
+        brandBody(
+          `Could not list models${reason ? ` (${reason})` : ''}. Enter a model id manually; no built-in model list is substituted.`,
+        ),
+      );
     }
     if (pendingKey?.keepExisting) {
       p.log.info(

@@ -274,10 +274,10 @@ it("says the endpoint rule is NanoClaw's and why plain HTTP is refused", () => {
   );
 });
 it.each(['https://models.example.test/v1', 'https://models.example.test:443/v1'])(
-  'accepts the HTTPS endpoint %s without a warning',
+  'accepts the HTTPS endpoint %s',
   (url) => {
     const f = fixture();
-    expect(ironModelEndpoint(url, f.root).warning).toBeUndefined();
+    expect(() => ironModelEndpoint(url, f.root)).not.toThrow();
   },
 );
 it.each([
@@ -287,12 +287,9 @@ it.each([
   ['llm.home.arpa', 'https://llm.home.arpa:443/v1'],
   ['ollama.home', 'https://ollama.home/v1'],
   ['models.corp', 'https://models.corp/v1'],
-])('accepts the private name %s with a local-CA warning', (host, url) => {
+])('refuses the private name %s, which no public CA certifies', (host, url) => {
   const f = fixture();
-  const endpoint = ironModelEndpoint(url, f.root);
-  expect(endpoint.warning).toBe(
-    `${host} is a private name. No public CA issues certificates for it, so Iron will refuse the connection unless it trusts your own local CA.`,
-  );
+  expect(() => ironModelEndpoint(url, f.root)).toThrow(`${host} is a private name.`);
   expect(f.allowHost).not.toHaveBeenCalled();
 });
 it('rechecks OAuth account rules before keeping or replacing a credential', async () => {

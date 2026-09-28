@@ -322,9 +322,7 @@ the provider; converting to a gateway's storage format stays in the gateway.
 operator enters an endpoint, so a refused URL can be corrected at the prompt;
 `configure()` routes the endpoint through the gateway once prompts complete.
 A gateway refuses an endpoint it can never serve by throwing, with the reason
-in the message. An optional `warning` names an endpoint the gateway accepts but
-may not reach as configured; the provider shows it once. A gateway that keeps no
-network allowlist declares nothing.
+in the message. A gateway that keeps no network allowlist declares nothing.
 
 `PROVIDER_CREDENTIAL_CONNECTION_SEAM_VERSION` gates a provider skill whose
 install needs `connection()`; an older core's store lacks it and the skill must
