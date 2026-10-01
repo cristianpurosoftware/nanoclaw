@@ -1110,6 +1110,20 @@ function isAckRow(content: string): boolean {
   }
 }
 
+/** Was a chat row with exactly this text written after `afterSeq`, to any destination? */
+function textWrittenSince(body: string, afterSeq: number): boolean {
+  try {
+    const content = JSON.stringify({ text: body });
+    return getUndeliveredMessages().some(
+      (message) => (message.seq ?? 0) > afterSeq && message.kind === 'chat' && message.content === content,
+    );
+  } catch (err) {
+    // Fail toward the nudge: a possible duplicate, never a silent drop.
+    log(`textWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 /**
  * Does messages_out already hold a chat row with this exact destination and
  * body, written in the seq window (afterSeq, uptoSeq]? Used by the mid-turn
@@ -1162,8 +1176,8 @@ export async function dispatchResultText(
   // undelivered reply.
   let sent = options?.midTurnSent ?? 0;
   let replied = options?.midTurnReplied ?? sent;
-  // Result blocks the mid-turn door never delivered: always nudge, even when
-  // something else streamed this turn.
+  // Result blocks that were not delivered (unknown destination, or missed by
+  // the stream): always nudge, even when another block went out this turn.
   let missed = 0;
   // <message to> blocks left inert in a task run — drives the same-turn
   // "use send_message" nudge in processQuery.
@@ -1195,6 +1209,8 @@ export async function dispatchResultText(
     if (!dest) {
       log(`Unknown destination in <message to="${toName}">, dropping block`);
       scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
+      // Lost unless it already went out this turn (its destination removed since).
+      if (options?.turnStartSeq !== undefined && !textWrittenSince(body, options.turnStartSeq)) missed++;
       continue;
     }
     // Never deliver a blank message: a body that is empty (or was only

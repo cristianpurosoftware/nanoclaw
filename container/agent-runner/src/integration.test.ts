@@ -175,11 +175,14 @@ describe('poll loop integration', () => {
     await waitFor(() => getUndeliveredMessages().length > 0, 2000);
     controller.abort();
 
+    // Only the valid destination gets output. The dropped block is nudged, and
+    // this mock answers the retry identically, so 'delivered' may repeat.
     const out = getUndeliveredMessages();
-    // Only the valid destination should produce output
-    expect(out).toHaveLength(1);
-    expect(JSON.parse(out[0].content).text).toBe('delivered');
-    expect(out[0].platform_id).toBe('chan-1');
+    expect(out.length).toBeGreaterThan(0);
+    for (const row of out) {
+      expect(JSON.parse(row.content).text).toBe('delivered');
+      expect(row.platform_id).toBe('chan-1');
+    }
 
     await loopPromise.catch(() => {});
   });

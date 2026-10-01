@@ -906,6 +906,25 @@ describe('<message> blocks to another agent', () => {
     expect(informedNudges(pushes)[0]).toContain('The answer is 4.');
   });
 
+  it.each(PROVIDER_MODES)(
+    'a block to an unknown destination is nudged even after another block went out (%s)',
+    async (provider, midTurn) => {
+      seedDest();
+      const ack = '<message to="discord-main">On it.</message>';
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        if (midTurn) yield { type: 'text', text: ack };
+        yield { type: 'result', text: `${ack}<message to="missing">The answer is 4.</message>` };
+      }
+      const { query, pushes } = makeStubQuery(events());
+
+      await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['On it.']);
+      expect(nudges(pushes)).toHaveLength(1);
+    },
+  );
+
   it('a streamed delegation does not hide an answer block that never streamed', async () => {
     seedDest();
     seedAgentDest('worker', 'ag-worker');
