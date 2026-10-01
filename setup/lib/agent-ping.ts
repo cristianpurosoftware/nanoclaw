@@ -43,14 +43,14 @@ const PING_HINTS: Record<Exclude<PingResult, 'ok'>, string> = {
 };
 
 // The only setup check that goes through the container, gateway and model.
-// Log it so a failed reply isn't hidden behind earlier successes.
-export function logFirstChat(outcome: PingOutcome, durationMs: number): void {
-  const { result, detail } = outcome;
+// Log it so a failed reply isn't hidden behind earlier successes. The agent's
+// error text stays on screen only, since setup.log gets shared in bug reports.
+export function logFirstChat({ result }: PingOutcome, durationMs: number): void {
   if (result === 'ok') {
     setupLog.step('first-chat', 'success', durationMs, { RESULT: result });
     return;
   }
-  setupLog.step('first-chat', 'failed', durationMs, { RESULT: result, DETAIL: detail, HINT: PING_HINTS[result] });
+  setupLog.step('first-chat', 'failed', durationMs, { RESULT: result, HINT: PING_HINTS[result] });
 }
 
 const AUTH_ERROR_PATTERNS = [
@@ -72,72 +72,81 @@ export function classifyPingResult(exitCode: number | null, stdout: string, stde
 }
 
 const TERMINAL_ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|[\x00-\x1f\x7f-\x9f]/g;
-// Credentials never belong on screen or in setup.log: auth-scheme values,
-// URL userinfo, and long token-like runs (keys, JWTs, base64).
-const SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/\b(bearer|basic)\s+\S+/gi, '$1 [redacted]'],
-  [/\/\/[^\s/@]+@/g, '//[redacted]@'],
-  [/[A-Za-z0-9_\-+=/.]{24,}/g, '[redacted]'],
-];
-// Node's own runtime warnings can precede the notice on stderr.
-const NODE_WARNING = /^\(node:\d+\)|^\(Use `node --trace-/;
-
-/** Make an agent error line safe to print and log: no escapes, no secrets, short. */
-export function sanitizeDetail(line: string): string | undefined {
-  let clean = line.replace(TERMINAL_ESCAPES, '');
-  for (const [re, replacement] of SECRET_PATTERNS) clean = clean.replace(re, replacement);
-  clean = clean.trim();
-  if (!clean || clean === GENERIC_FAILURE_NOTICE) return undefined;
-  return clean.length > DETAIL_MAX_CHARS ? `${clean.slice(0, DETAIL_MAX_CHARS - 1)}…` : clean;
-}
-
-function lines(text: string): string[] {
-  return text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-}
 
 /**
- * The reason to show for a failed ping. ncl prints failure notices on stderr,
- * so a partial reply on stdout is never mistaken for the error.
+ * Make an agent error line safe to print: no terminal escapes, one short line.
+ * Not redacted: it is the same text the runner sends to every chat channel.
  */
-export function failureDetail(result: PingResult, stdout: string, stderr: string): string | undefined {
-  if (result === 'agent_failure') return sanitizeDetail(lines(stderr).find((l) => !NODE_WARNING.test(l)) ?? '');
-  if (result === 'auth_error') {
-    const hit = [...lines(stderr), ...lines(stdout)].find((l) => AUTH_ERROR_PATTERNS.some((re) => re.test(l)));
-    return hit ? sanitizeDetail(hit) : undefined;
-  }
-  return undefined;
+export function sanitizeDetail(text: string): string | undefined {
+  const line = text
+    .split('\n')
+    .map((l) => l.replace(TERMINAL_ESCAPES, '').trim())
+    .find((l) => l.length > 0);
+  if (!line || line === GENERIC_FAILURE_NOTICE) return undefined;
+  return line.length > DETAIL_MAX_CHARS ? `${line.slice(0, DETAIL_MAX_CHARS - 1)}…` : line;
 }
 
-function toOutcome(result: PingResult, stdout: string, stderr: string): PingOutcome {
-  const detail = failureDetail(result, stdout, stderr);
+interface PingReply {
+  text: string;
+  failureNotice: boolean;
+}
+
+// ncl runs in raw-lines mode for the ping: one socket JSON line per stdout line.
+function parseReplies(stdout: string): PingReply[] {
+  const replies: PingReply[] = [];
+  for (const line of stdout.split('\n')) {
+    let msg: unknown;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (msg && typeof msg === 'object' && typeof (msg as { text?: unknown }).text === 'string') {
+      const m = msg as { text: string; failureNotice?: unknown };
+      replies.push({ text: m.text, failureNotice: m.failureNotice === true });
+    }
+  }
+  return replies;
+}
+
+/** Classify ncl's raw-lines output and pick the reason to show, if any. */
+export function pingOutcome(exitCode: number | null, stdout: string, stderr: string): PingOutcome {
+  const replies = parseReplies(stdout);
+  const text = replies.map((r) => r.text).join('\n');
+  const result = classifyPingResult(exitCode, text, stderr);
+  let detail: string | undefined;
+  if (result === 'agent_failure') {
+    detail = sanitizeDetail(replies.find((r) => r.failureNotice)?.text ?? '');
+  } else if (result === 'auth_error') {
+    const hit = `${text}\n${stderr}`.split('\n').find((l) => AUTH_ERROR_PATTERNS.some((re) => re.test(l)));
+    detail = sanitizeDetail(hit ?? '');
+  }
   return detail ? { result, detail } : { result };
 }
 
 export function pingCliAgent(timeoutMs = 30_000): Promise<PingOutcome> {
   return new Promise((resolve) => {
-    // --silent keeps pnpm's banner out of stdout, which holds only the reply.
+    // --silent keeps pnpm's banner out of stdout, which holds only replies.
     const child = spawn('pnpm', ['--silent', 'run', 'chat', 'ping'], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, NANOCLAW_CHAT_RAW_LINES: '1' },
     });
     let stdout = '';
     let stderr = '';
     let settled = false;
     let graceUsed = false;
-    // A reply or notice already printed means chat.ts is in its 2s silence
-    // wait; let it exit so its code (0 vs 4) still decides the result.
+    // A reply already printed means chat.ts is in its 2s silence wait; let it
+    // exit so its code (0 vs 4) still decides the result.
     const onTimeout = () => {
       if (settled) return;
-      if (!graceUsed && `${stdout}${stderr}`.trim().length > 0) {
+      if (!graceUsed && stdout.trim().length > 0) {
         graceUsed = true;
         timer = setTimeout(onTimeout, PING_EXIT_GRACE_MS);
         return;
       }
       settled = true;
       child.kill('SIGKILL');
-      resolve(toOutcome(classifyPingResult(null, stdout, stderr), stdout, stderr));
+      resolve(pingOutcome(null, stdout, stderr));
     };
     let timer = setTimeout(onTimeout, timeoutMs);
 
@@ -151,7 +160,7 @@ export function pingCliAgent(timeoutMs = 30_000): Promise<PingOutcome> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(toOutcome(classifyPingResult(code, stdout, stderr), stdout, stderr));
+      resolve(pingOutcome(code, stdout, stderr));
     });
     child.on('error', () => {
       if (settled) return;

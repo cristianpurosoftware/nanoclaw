@@ -7,7 +7,7 @@ import { isValidGroupFolder } from '../../src/group-folder.js';
 import * as setupLog from '../logs.js';
 import {
   classifyPingResult,
-  failureDetail,
+  pingOutcome,
   sanitizeDetail,
   GENERIC_FAILURE_NOTICE,
   logFirstChat,
@@ -18,9 +18,13 @@ import {
 
 vi.mock('../logs.js', () => ({ step: vi.fn() }));
 
-const { children } = vi.hoisted(() => ({ children: [] as FakeChild[] }));
+const { children, spawnEnv } = vi.hoisted(() => ({
+  children: [] as FakeChild[],
+  spawnEnv: [] as Array<Record<string, string | undefined> | undefined>,
+}));
 vi.mock('child_process', () => ({
-  spawn: () => {
+  spawn: (_cmd: string, _args: string[], opts?: { env?: Record<string, string | undefined> }) => {
+    spawnEnv.push(opts?.env);
     const child = Object.assign(new EventEmitter(), {
       stdout: new EventEmitter(),
       stderr: new EventEmitter(),
@@ -30,6 +34,8 @@ vi.mock('child_process', () => ({
     return child;
   },
 }));
+const raw = (text: string, failureNotice?: boolean) =>
+  Buffer.from(JSON.stringify(failureNotice ? { text, failureNotice } : { text }) + '\n');
 type FakeChild = EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: ReturnType<typeof vi.fn> };
 
 it('uses a runtime-safe folder for the setup ping agent', () => {
@@ -85,11 +91,10 @@ it('logs the first-chat ping result to setup.log', () => {
   });
 });
 
-it('logs an agent failure with its reason and a what-to-do hint', () => {
+it('logs an agent failure with a what-to-do hint but not its error text', () => {
   logFirstChat({ result: 'agent_failure', detail: 'quota exceeded' }, 900);
   expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'failed', 900, {
     RESULT: 'agent_failure',
-    DETAIL: 'quota exceeded',
     HINT: expect.stringContaining('credentials'),
   });
 });
@@ -109,19 +114,19 @@ describe('pingCliAgent timeout', () => {
     vi.useFakeTimers();
     const result = pingCliAgent(1000);
     const child = children[0];
-    child.stdout.emit('data', Buffer.from('The agent run failed. Check the logs for details.\n'));
+    child.stdout.emit('data', raw('The agent run failed. Check the logs for details.', true));
     await vi.advanceTimersByTimeAsync(1000);
     expect(child.kill).not.toHaveBeenCalled();
     child.emit('close', 4);
     await expect(result).resolves.toEqual({ result: 'agent_failure' });
   });
 
-  it('gives a notice printed on stderr the same grace', async () => {
+  it("waits out ncl's 2s quiet period before giving up", async () => {
     vi.useFakeTimers();
     const result = pingCliAgent(1000);
     const child = children[0];
-    child.stderr.emit('data', Buffer.from('Spending limit reached\n'));
-    await vi.advanceTimersByTimeAsync(1000);
+    child.stdout.emit('data', raw('Spending limit reached', true));
+    await vi.advanceTimersByTimeAsync(1000 + 2000);
     expect(child.kill).not.toHaveBeenCalled();
     child.emit('close', 4);
     await expect(result).resolves.toEqual({ result: 'agent_failure', detail: 'Spending limit reached' });
@@ -138,51 +143,46 @@ describe('pingCliAgent timeout', () => {
   it('gives up after the grace period if the client never exits', async () => {
     vi.useFakeTimers();
     const result = pingCliAgent(1000);
-    children[0].stdout.emit('data', Buffer.from('pong\n'));
+    children[0].stdout.emit('data', raw('pong'));
     await vi.advanceTimersByTimeAsync(5000);
     expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
     await expect(result).resolves.toEqual({ result: 'no_reply' });
   });
 });
 
-describe('failure detail', () => {
-  it('takes the notice from stderr, not a partial reply on stdout', () => {
-    expect(
-      failureDetail('agent_failure', 'Finished the first step.\n', '403 billing_error: Spending limit reached.\n'),
-    ).toBe('403 billing_error: Spending limit reached.');
-  });
-
-  it('skips Node runtime warnings ahead of the notice', () => {
-    const stderr =
-      '(node:123) [DEP0040] DeprecationWarning: punycode\n(Use `node --trace-deprecation ...`)\nSpending limit reached\n';
-    expect(failureDetail('agent_failure', '', stderr)).toBe('Spending limit reached');
+describe('ping outcome from raw ncl lines', () => {
+  it('uses the flagged notice, not a partial reply before it', () => {
+    const stdout = raw('Finished the first step.').toString() + raw('403 billing_error: Spending limit reached.', true);
+    expect(pingOutcome(4, stdout, '(node:1) Warning: something\n')).toEqual({
+      result: 'agent_failure',
+      detail: '403 billing_error: Spending limit reached.',
+    });
   });
 
   it('hides the generic notice, which carries no reason', () => {
-    expect(failureDetail('agent_failure', '', `${GENERIC_FAILURE_NOTICE}\n`)).toBeUndefined();
-    expect(failureDetail('agent_failure', '', '')).toBeUndefined();
+    expect(pingOutcome(4, raw(GENERIC_FAILURE_NOTICE, true).toString(), '')).toEqual({ result: 'agent_failure' });
   });
 
   it('uses the matching line for an auth error on either stream', () => {
-    expect(failureDetail('auth_error', '', 'Authentication error: invalid account\n')).toBe(
-      'Authentication error: invalid account',
-    );
-    expect(failureDetail('auth_error', 'hello\nInvalid API key · Please run /login\n', '')).toBe(
-      'Invalid API key · Please run /login',
-    );
+    expect(pingOutcome(1, '', 'Authentication error: invalid account\n')).toEqual({
+      result: 'auth_error',
+      detail: 'Authentication error: invalid account',
+    });
+    expect(pingOutcome(4, raw('Invalid API key · Please run /login', true).toString(), '')).toEqual({
+      result: 'auth_error',
+      detail: 'Invalid API key · Please run /login',
+    });
   });
 
-  it('strips terminal escapes and redacts token-like strings', () => {
-    expect(sanitizeDetail('\x1b]52;c;VEVTVA==\x07\x1b[31mInvalid API key\x1b[0m')).toBe('Invalid API key');
-    expect(sanitizeDetail('Rejected: Bearer synthetic-review-token-0123456789')).toBe('Rejected: Bearer [redacted]');
-    expect(sanitizeDetail('Rejected: aBcdEf0123/ghIjKl4567/mnOpQr8901')).toBe('Rejected: [redacted]');
-    expect(sanitizeDetail('Cannot reach https://operator:hunter2@example.test/v1')).not.toContain('hunter2');
+  it('reads a normal reply as ok', () => {
+    expect(pingOutcome(0, raw('pong').toString(), '')).toEqual({ result: 'ok' });
   });
 
-  it('truncates a long line', () => {
-    const detail = sanitizeDetail('word '.repeat(100));
-    expect(detail).toHaveLength(160);
-    expect(detail?.endsWith('…')).toBe(true);
+  it('strips terminal escapes and keeps one short line', () => {
+    expect(sanitizeDetail('\x1b]52;c;VEVTVA==\x07\x1b[31mInvalid API key\x1b[0m\nsecond line')).toBe('Invalid API key');
+    const long = sanitizeDetail('word '.repeat(100));
+    expect(long).toHaveLength(160);
+    expect(long?.endsWith('…')).toBe(true);
   });
 
   it('matches the runner constant', () => {
@@ -190,12 +190,13 @@ describe('failure detail', () => {
     expect(runner.match(/export const GENERIC_FAILURE_NOTICE = '([^']+)'/)?.[1]).toBe(GENERIC_FAILURE_NOTICE);
   });
 
-  it('is attached to the outcome of a failed ping', async () => {
+  it('runs ncl in raw-lines mode and attaches the reason', async () => {
     const result = pingCliAgent(1000);
     const child = children[children.length - 1];
-    child.stderr.emit('data', Buffer.from('Credit balance is too low\n'));
+    child.stdout.emit('data', raw('Credit balance is too low', true));
     child.emit('close', 4);
     await expect(result).resolves.toEqual({ result: 'agent_failure', detail: 'Credit balance is too low' });
+    expect(spawnEnv[spawnEnv.length - 1]?.NANOCLAW_CHAT_RAW_LINES).toBe('1');
   });
 });
 
