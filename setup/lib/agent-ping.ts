@@ -24,7 +24,7 @@ const PING_HINTS: Record<Exclude<PingResult, 'ok'>, string> = {
   no_reply: 'no reply in time; check logs/nanoclaw.log',
   socket_error: 'service not listening on data/cli.sock; restart it',
   auth_error: 'model credentials rejected; check them, then logs/nanoclaw.log',
-  agent_failure: 'agent run failed; check the model credentials, then logs/nanoclaw.log',
+  agent_failure: 'agent run failed; see logs/nanoclaw.log (model credentials are a common cause)',
 };
 
 // The only setup check that goes through the container, gateway and model.

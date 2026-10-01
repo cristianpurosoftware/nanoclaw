@@ -662,7 +662,7 @@ async function main(): Promise<void> {
             ping === 'socket_error'
               ? 'Socket at data/cli.sock did not accept a connection.'
               : ping === 'agent_failure' || ping === 'auth_error'
-                ? 'The agent run failed; model credentials are the usual cause. See logs/nanoclaw.log.'
+                ? 'The agent run failed. See logs/nanoclaw.log; wrong or expired model credentials are a common cause.'
                 : 'Agent container may be failing to start or authenticate.',
         });
       }
@@ -914,7 +914,7 @@ function renderPingFailureNote(result: PingResult): void {
         ].join('\n')
       : result === 'agent_failure' || result === 'auth_error'
         ? wrapForGutter(
-            'Your assistant answered with an error instead of a reply. The model credentials are the usual cause: check them, look in `logs/nanoclaw.log` for the error, then try `pnpm run chat hi`.',
+            'Your assistant answered with an error instead of a reply. Look in `logs/nanoclaw.log` for the error (wrong or expired model credentials are a common cause), then try `pnpm run chat hi`.',
             6,
           )
         : wrapForGutter(
