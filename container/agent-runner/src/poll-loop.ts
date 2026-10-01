@@ -655,7 +655,7 @@ export async function processQuery(
           if (willRetryWrapping) {
             unwrappedNudged = true;
             // Everything that went out this turn, tool and door sends alike.
-            const sentThisTurn = chatRowsWrittenSince(turnStartSeq);
+            const sentThisTurn = chatRowsInWindow(turnStartSeq).filter((row) => !isReactionRow(row.content));
             const destinations = getAllDestinations();
             const names = destinations.map((d) => d.name).join(', ');
             // A tool send can't be told apart from an "on it" ack, so after
@@ -1023,19 +1023,18 @@ function maxOutboundSeq(): number {
 }
 
 /**
- * Chat rows written to outbound.db after `afterSeq`, for the informed nudge
- * to quote: unlike the frame-local midTurnSent count, this sees MCP
- * send_message / send_file deliveries. Reactions are left out. On a lookup
- * error, return none: the plain nudge fires instead, never a silent drop.
+ * Chat rows written to outbound.db in the seq window (afterSeq, uptoSeq]:
+ * door, tool and error sends alike. Every caller fails toward a nudge or a
+ * delivery, so a lookup error returns none.
  */
-function chatRowsWrittenSince(afterSeq: number): MessageOutRow[] {
+function chatRowsInWindow(afterSeq: number, uptoSeq = Infinity): MessageOutRow[] {
   try {
     // ponytail: reuse the existing semantic read; add a cursor operation only if history scans show up in profiles.
     return getUndeliveredMessages().filter(
-      (message) => (message.seq ?? 0) > afterSeq && message.kind === 'chat' && !isReactionRow(message.content),
+      (message) => (message.seq ?? 0) > afterSeq && (message.seq ?? 0) <= uptoSeq && message.kind === 'chat',
     );
   } catch (err) {
-    log(`chatRowsWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
+    log(`Outbound lookup failed: ${err instanceof Error ? err.message : String(err)}`);
     return [];
   }
 }
@@ -1097,16 +1096,8 @@ function isReactionRow(content: string): boolean {
 
 /** Was a chat row with exactly this text written after `afterSeq`, to any destination? */
 function textWrittenSince(body: string, afterSeq: number): boolean {
-  try {
-    const content = JSON.stringify({ text: body });
-    return getUndeliveredMessages().some(
-      (message) => (message.seq ?? 0) > afterSeq && message.kind === 'chat' && message.content === content,
-    );
-  } catch (err) {
-    // Fail toward the nudge: a possible duplicate, never a silent drop.
-    log(`textWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
+  const content = JSON.stringify({ text: body });
+  return chatRowsInWindow(afterSeq).some((message) => message.content === content);
 }
 
 /**
@@ -1119,26 +1110,15 @@ function textWrittenSince(body: string, afterSeq: number): boolean {
  */
 function wasWrittenInSeqWindow(dest: DestinationEntry, body: string, afterSeq: number, uptoSeq: number): boolean {
   if (uptoSeq <= afterSeq) return false;
-  try {
-    const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
-    const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
-    const content = JSON.stringify({ text: body });
-    return getUndeliveredMessages().some(
-      (message) =>
-        (message.seq ?? 0) > afterSeq &&
-        (message.seq ?? 0) <= uptoSeq &&
-        message.kind === 'chat' &&
-        message.platform_id === platformId &&
-        message.channel_type === channelType &&
-        message.content === content,
-    );
-  } catch (err) {
-    // The guard is an anti-duplication refinement; if the lookup itself
-    // fails, fall through to delivery (the write will surface any real DB
-    // breakage loudly).
-    log(`Echo-guard lookup failed: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
-  }
+  const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
+  const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+  const content = JSON.stringify({ text: body });
+  // A lookup error reads as "not written": the guard falls through to
+  // delivery, and the write surfaces any real DB breakage loudly.
+  return chatRowsInWindow(afterSeq, uptoSeq).some(
+    (message) =>
+      message.platform_id === platformId && message.channel_type === channelType && message.content === content,
+  );
 }
 
 export async function dispatchResultText(
