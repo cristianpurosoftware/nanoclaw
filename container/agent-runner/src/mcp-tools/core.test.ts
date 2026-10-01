@@ -137,6 +137,17 @@ describe('send_message MCP tool — in_reply_to plumbing', () => {
   });
 });
 
+describe('send_message MCP tool — progress flag', () => {
+  it('marks the row only when progress is true', async () => {
+    await sendMessage.handler({ to: 'peer', text: 'On it', progress: true });
+    await sendMessage.handler({ to: 'peer', text: 'The answer', progress: false });
+    await sendMessage.handler({ to: 'peer', text: 'Plain' });
+
+    const contents = getUndeliveredMessages().map((m) => JSON.parse(m.content));
+    expect(contents).toEqual([{ text: 'On it', progress: true }, { text: 'The answer' }, { text: 'Plain' }]);
+  });
+});
+
 describe('send_message / send_file — thread for a channel destination', () => {
   // send_file stages the file under /workspace/outbox, which only exists in a
   // container. Routing is what's under test, so stub the copy.

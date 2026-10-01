@@ -1017,7 +1017,7 @@ function maxOutboundSeq(): number {
  * result door's nudge decision: unlike the frame-local midTurnSent count,
  * this also sees MCP send_message / send_file deliveries made this turn, so
  * an agent that already replied via tools is not nudged into repeating
- * itself. Reactions do not count as a reply, and neither does a message to
+ * itself. Acks (reactions, progress sends) do not count as a reply, nor does a message to
  * another agent unless every row in the batch came from an agent: with any
  * user row in the batch an a2a send is delegation, and the user's answer is
  * still owed. Fail-open to false: if the lookup breaks, the nudge may fire
@@ -1031,7 +1031,7 @@ function chatRowWrittenSince(afterSeq: number, countAgentRows: boolean): boolean
         (message.seq ?? 0) > afterSeq &&
         message.kind === 'chat' &&
         (countAgentRows || message.channel_type !== 'agent') &&
-        !isReactionRow(message.content),
+        !isAckRow(message.content),
     );
   } catch (err) {
     log(`chatRowWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1040,13 +1040,14 @@ function chatRowWrittenSince(afterSeq: number, countAgentRows: boolean): boolean
 }
 
 /**
- * A reaction (add_reaction) is a chat row too, but it is an acknowledgement,
- * not a reply: an agent that reacts and then leaves its answer unwrapped has
- * still delivered nothing, so the nudge must fire.
+ * A reaction or a send_message flagged `progress` is a chat row too, but it
+ * is an acknowledgement, not a reply: an agent that acks and then leaves its
+ * answer unwrapped has still delivered nothing, so the nudge must fire.
  */
-function isReactionRow(content: string): boolean {
+function isAckRow(content: string): boolean {
   try {
-    return (JSON.parse(content) as { operation?: unknown }).operation === 'reaction';
+    const parsed = JSON.parse(content) as { operation?: unknown; progress?: unknown };
+    return parsed.operation === 'reaction' || parsed.progress === true;
   } catch {
     return false;
   }

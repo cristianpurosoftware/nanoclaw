@@ -28,6 +28,7 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     const prompt = buildSystemPromptAddendum('Casa');
 
     expect(prompt).toContain('default to addressing the destination it came `from`');
+    expect(prompt).toContain('pass `progress: true`');
     expect(prompt).toContain('from="name"');
     expect(prompt).toContain('`casa`');
     expect(prompt).toContain('`whatsapp-mg-17780`');
@@ -85,9 +86,7 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
 
     const prompt = buildSystemPromptAddendum('Casa', { kind: 'task', taskId: 'weekly-report' });
 
-    expect(prompt).toContain(
-      'For user-visible escalation output, default to your own channel destination(s): `casa`',
-    );
+    expect(prompt).toContain('For user-visible escalation output, default to your own channel destination(s): `casa`');
     expect(prompt).toContain(
       'Use an agent-type destination like `parent` only when the task explicitly calls for routing through another agent, not as your default escalation path.',
     );
