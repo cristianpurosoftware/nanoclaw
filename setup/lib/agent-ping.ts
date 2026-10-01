@@ -72,12 +72,21 @@ export function classifyPingResult(exitCode: number | null, stdout: string, stde
 }
 
 const TERMINAL_ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|[\x00-\x1f\x7f-\x9f]/g;
-// Long token-like runs (keys, bearer tokens, JWT parts) never belong on screen or in setup.log.
-const SECRET_LIKE = /[A-Za-z0-9_\-+=]{24,}/g;
+// Credentials never belong on screen or in setup.log: auth-scheme values,
+// URL userinfo, and long token-like runs (keys, JWTs, base64).
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(bearer|basic)\s+\S+/gi, '$1 [redacted]'],
+  [/\/\/[^\s/@]+@/g, '//[redacted]@'],
+  [/[A-Za-z0-9_\-+=/.]{24,}/g, '[redacted]'],
+];
+// Node's own runtime warnings can precede the notice on stderr.
+const NODE_WARNING = /^\(node:\d+\)|^\(Use `node --trace-/;
 
 /** Make an agent error line safe to print and log: no escapes, no secrets, short. */
 export function sanitizeDetail(line: string): string | undefined {
-  const clean = line.replace(TERMINAL_ESCAPES, '').replace(SECRET_LIKE, '[redacted]').trim();
+  let clean = line.replace(TERMINAL_ESCAPES, '');
+  for (const [re, replacement] of SECRET_PATTERNS) clean = clean.replace(re, replacement);
+  clean = clean.trim();
   if (!clean || clean === GENERIC_FAILURE_NOTICE) return undefined;
   return clean.length > DETAIL_MAX_CHARS ? `${clean.slice(0, DETAIL_MAX_CHARS - 1)}…` : clean;
 }
@@ -94,7 +103,7 @@ function lines(text: string): string[] {
  * so a partial reply on stdout is never mistaken for the error.
  */
 export function failureDetail(result: PingResult, stdout: string, stderr: string): string | undefined {
-  if (result === 'agent_failure') return sanitizeDetail(lines(stderr)[0] ?? '');
+  if (result === 'agent_failure') return sanitizeDetail(lines(stderr).find((l) => !NODE_WARNING.test(l)) ?? '');
   if (result === 'auth_error') {
     const hit = [...lines(stderr), ...lines(stdout)].find((l) => AUTH_ERROR_PATTERNS.some((re) => re.test(l)));
     return hit ? sanitizeDetail(hit) : undefined;

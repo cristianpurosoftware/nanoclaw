@@ -116,6 +116,17 @@ describe('pingCliAgent timeout', () => {
     await expect(result).resolves.toEqual({ result: 'agent_failure' });
   });
 
+  it('gives a notice printed on stderr the same grace', async () => {
+    vi.useFakeTimers();
+    const result = pingCliAgent(1000);
+    const child = children[0];
+    child.stderr.emit('data', Buffer.from('Spending limit reached\n'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.emit('close', 4);
+    await expect(result).resolves.toEqual({ result: 'agent_failure', detail: 'Spending limit reached' });
+  });
+
   it('reports no_reply when nothing was printed by the deadline', async () => {
     vi.useFakeTimers();
     const result = pingCliAgent(1000);
@@ -141,6 +152,12 @@ describe('failure detail', () => {
     ).toBe('403 billing_error: Spending limit reached.');
   });
 
+  it('skips Node runtime warnings ahead of the notice', () => {
+    const stderr =
+      '(node:123) [DEP0040] DeprecationWarning: punycode\n(Use `node --trace-deprecation ...`)\nSpending limit reached\n';
+    expect(failureDetail('agent_failure', '', stderr)).toBe('Spending limit reached');
+  });
+
   it('hides the generic notice, which carries no reason', () => {
     expect(failureDetail('agent_failure', '', `${GENERIC_FAILURE_NOTICE}\n`)).toBeUndefined();
     expect(failureDetail('agent_failure', '', '')).toBeUndefined();
@@ -158,6 +175,8 @@ describe('failure detail', () => {
   it('strips terminal escapes and redacts token-like strings', () => {
     expect(sanitizeDetail('\x1b]52;c;VEVTVA==\x07\x1b[31mInvalid API key\x1b[0m')).toBe('Invalid API key');
     expect(sanitizeDetail('Rejected: Bearer synthetic-review-token-0123456789')).toBe('Rejected: Bearer [redacted]');
+    expect(sanitizeDetail('Rejected: aBcdEf0123/ghIjKl4567/mnOpQr8901')).toBe('Rejected: [redacted]');
+    expect(sanitizeDetail('Cannot reach https://operator:hunter2@example.test/v1')).not.toContain('hunter2');
   });
 
   it('truncates a long line', () => {
