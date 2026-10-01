@@ -13,7 +13,9 @@
  */
 import { spawn } from 'child_process';
 
+import { getLaunchdLabel, getSystemdUnit } from '../../src/install-slug.js';
 import * as setupLog from '../logs.js';
+import { wrapForGutter } from './theme.js';
 
 export const PING_AGENT_FOLDER = 'ping_test';
 
@@ -22,21 +24,48 @@ const PING_EXIT_GRACE_MS = 3_000;
 
 export type PingResult = 'ok' | 'no_reply' | 'socket_error' | 'auth_error' | 'agent_failure';
 
+export interface PingOutcome {
+  result: PingResult;
+  /** The agent's own error line, when its failed run sent one. */
+  detail?: string;
+}
+
+// The runner's notice when it has no error of its own to report; it tells the
+// user nothing, so it is not shown. agent-ping.test.ts pins it to poll-loop.ts.
+export const GENERIC_FAILURE_NOTICE = 'The agent run failed. Check the logs for details.';
+const DETAIL_MAX_CHARS = 160;
+
 const PING_HINTS: Record<Exclude<PingResult, 'ok'>, string> = {
   no_reply: 'no reply in time; check logs/nanoclaw.log',
   socket_error: 'service not listening on data/cli.sock; restart it',
-  auth_error: 'model credentials rejected; check them, then logs/nanoclaw.log',
-  agent_failure: 'agent run failed; see logs/nanoclaw.log (model credentials are a common cause)',
+  auth_error: 'model credentials rejected; check them',
+  agent_failure: 'agent run failed; check the model credentials (a common cause)',
 };
 
 // The only setup check that goes through the container, gateway and model.
 // Log it so a failed reply isn't hidden behind earlier successes.
-export function logFirstChat(result: PingResult, durationMs: number): void {
+export function logFirstChat(outcome: PingOutcome, durationMs: number): void {
+  const { result, detail } = outcome;
   if (result === 'ok') {
     setupLog.step('first-chat', 'success', durationMs, { RESULT: result });
     return;
   }
-  setupLog.step('first-chat', 'failed', durationMs, { RESULT: result, HINT: PING_HINTS[result] });
+  setupLog.step('first-chat', 'failed', durationMs, { RESULT: result, DETAIL: detail, HINT: PING_HINTS[result] });
+}
+
+/** First line of a failed reply, unless it is the generic notice. */
+export function failureDetail(stdout: string): string | undefined {
+  const line = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!line || line === GENERIC_FAILURE_NOTICE) return undefined;
+  return line.length > DETAIL_MAX_CHARS ? `${line.slice(0, DETAIL_MAX_CHARS - 1)}…` : line;
+}
+
+function toOutcome(result: PingResult, stdout: string): PingOutcome {
+  if (result !== 'agent_failure' && result !== 'auth_error') return { result };
+  return { result, detail: failureDetail(stdout) };
 }
 
 export function classifyPingResult(exitCode: number | null, stdout: string, stderr = ''): PingResult {
@@ -57,9 +86,10 @@ export function classifyPingResult(exitCode: number | null, stdout: string, stde
   return 'no_reply';
 }
 
-export function pingCliAgent(timeoutMs = 30_000): Promise<PingResult> {
+export function pingCliAgent(timeoutMs = 30_000): Promise<PingOutcome> {
   return new Promise((resolve) => {
-    const child = spawn('pnpm', ['run', 'chat', 'ping'], {
+    // --silent keeps pnpm's banner out of stdout, which holds only the reply.
+    const child = spawn('pnpm', ['--silent', 'run', 'chat', 'ping'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -77,7 +107,7 @@ export function pingCliAgent(timeoutMs = 30_000): Promise<PingResult> {
       }
       settled = true;
       child.kill('SIGKILL');
-      resolve(classifyPingResult(null, stdout, stderr));
+      resolve(toOutcome(classifyPingResult(null, stdout, stderr), stdout));
     };
     let timer = setTimeout(onTimeout, timeoutMs);
 
@@ -91,13 +121,63 @@ export function pingCliAgent(timeoutMs = 30_000): Promise<PingResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(classifyPingResult(code, stdout, stderr));
+      resolve(toOutcome(classifyPingResult(code, stdout, stderr), stdout));
     });
     child.on('error', () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve('socket_error');
+      resolve({ result: 'socket_error' });
     });
   });
+}
+
+export interface PingFailureCopy {
+  spinner: string;
+  note: string;
+  assistMsg: string;
+  assistHint: string;
+}
+
+/** Wizard text for a failed ping; shows the agent's own error when it sent one. */
+export function pingFailureCopy({ result, detail }: PingOutcome): PingFailureCopy {
+  if (result === 'socket_error') {
+    return {
+      spinner: "Couldn't reach the NanoClaw service.",
+      note: [
+        wrapForGutter(
+          "The NanoClaw service isn't listening on its local socket. Try restarting it, then chat with `pnpm run chat hi`:",
+          6,
+        ),
+        '',
+        `  macOS:  launchctl kickstart -k gui/$(id -u)/${getLaunchdLabel()}`,
+        `  Linux:  systemctl --user restart ${getSystemdUnit()}`,
+      ].join('\n'),
+      assistMsg: "NanoClaw service isn't listening on its CLI socket.",
+      assistHint: 'Socket at data/cli.sock did not accept a connection.',
+    };
+  }
+  if (result === 'agent_failure' || result === 'auth_error') {
+    const reason = detail ? `It said: "${detail}".` : 'It sent no reason.';
+    return {
+      spinner: 'Your assistant started, but its run failed.',
+      note: wrapForGutter(
+        `Your assistant's run failed. ${reason} Wrong or expired model credentials are a common cause: check them, then try \`pnpm run chat hi\`.`,
+        6,
+      ),
+      assistMsg: 'The assistant replied with a failure notice instead of an answer.',
+      assistHint: detail
+        ? `The agent's error: ${detail}`
+        : 'The agent run failed without a reason; wrong or expired model credentials are a common cause.',
+    };
+  }
+  return {
+    spinner: "Your assistant didn't reply in time.",
+    note: wrapForGutter(
+      'No reply from your assistant within 30 seconds. Check `logs/nanoclaw.log` for clues, then try `pnpm run chat hi`.',
+      6,
+    ),
+    assistMsg: 'No reply from the assistant within 30 seconds.',
+    assistHint: 'Agent container may be failing to start or authenticate.',
+  };
 }

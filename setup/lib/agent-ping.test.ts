@@ -1,9 +1,19 @@
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isValidGroupFolder } from '../../src/group-folder.js';
 import * as setupLog from '../logs.js';
-import { classifyPingResult, logFirstChat, pingCliAgent, PING_AGENT_FOLDER } from './agent-ping.js';
+import {
+  classifyPingResult,
+  failureDetail,
+  GENERIC_FAILURE_NOTICE,
+  logFirstChat,
+  pingCliAgent,
+  pingFailureCopy,
+  PING_AGENT_FOLDER,
+} from './agent-ping.js';
 
 vi.mock('../logs.js', () => ({ step: vi.fn() }));
 
@@ -67,23 +77,24 @@ describe('classifyPingResult', () => {
 });
 
 it('logs the first-chat ping result to setup.log', () => {
-  logFirstChat('no_reply', 1200);
+  logFirstChat({ result: 'no_reply' }, 1200);
   expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'failed', 1200, {
     RESULT: 'no_reply',
     HINT: expect.stringContaining('logs/nanoclaw.log'),
   });
 });
 
-it('logs an agent failure as failed with a what-to-do hint', () => {
-  logFirstChat('agent_failure', 900);
+it('logs an agent failure with its reason and a what-to-do hint', () => {
+  logFirstChat({ result: 'agent_failure', detail: 'quota exceeded' }, 900);
   expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'failed', 900, {
     RESULT: 'agent_failure',
+    DETAIL: 'quota exceeded',
     HINT: expect.stringContaining('credentials'),
   });
 });
 
 it('logs ok as success without a hint', () => {
-  logFirstChat('ok', 500);
+  logFirstChat({ result: 'ok' }, 500);
   expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'success', 500, { RESULT: 'ok' });
 });
 
@@ -101,7 +112,7 @@ describe('pingCliAgent timeout', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(child.kill).not.toHaveBeenCalled();
     child.emit('close', 4);
-    await expect(result).resolves.toBe('agent_failure');
+    await expect(result).resolves.toEqual({ result: 'agent_failure' });
   });
 
   it('reports no_reply when nothing was printed by the deadline', async () => {
@@ -109,7 +120,7 @@ describe('pingCliAgent timeout', () => {
     const result = pingCliAgent(1000);
     await vi.advanceTimersByTimeAsync(1000);
     expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
-    await expect(result).resolves.toBe('no_reply');
+    await expect(result).resolves.toEqual({ result: 'no_reply' });
   });
 
   it('gives up after the grace period if the client never exits', async () => {
@@ -118,6 +129,56 @@ describe('pingCliAgent timeout', () => {
     children[0].stdout.emit('data', Buffer.from('pong\n'));
     await vi.advanceTimersByTimeAsync(5000);
     expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
-    await expect(result).resolves.toBe('no_reply');
+    await expect(result).resolves.toEqual({ result: 'no_reply' });
+  });
+});
+
+describe('failure detail', () => {
+  it('returns the agent error line, trimmed', () => {
+    expect(failureDetail('  Invalid API key · Fix external API key  \n')).toBe(
+      'Invalid API key · Fix external API key',
+    );
+  });
+
+  it('hides the generic notice, which carries no reason', () => {
+    expect(failureDetail(`${GENERIC_FAILURE_NOTICE}\n`)).toBeUndefined();
+    expect(failureDetail('')).toBeUndefined();
+  });
+
+  it('truncates a long line', () => {
+    const detail = failureDetail('x'.repeat(500));
+    expect(detail).toHaveLength(160);
+    expect(detail?.endsWith('…')).toBe(true);
+  });
+
+  it('matches the runner generic notice text', () => {
+    const runner = fs.readFileSync(path.join(process.cwd(), 'container/agent-runner/src/poll-loop.ts'), 'utf-8');
+    expect(runner).toContain(`'${GENERIC_FAILURE_NOTICE}'`);
+  });
+
+  it('is attached to the outcome of a failed ping', async () => {
+    const result = pingCliAgent(1000);
+    const child = children[children.length - 1];
+    child.stdout.emit('data', Buffer.from('Credit balance is too low\n'));
+    child.emit('close', 4);
+    await expect(result).resolves.toEqual({ result: 'agent_failure', detail: 'Credit balance is too low' });
+  });
+});
+
+describe('wizard failure copy', () => {
+  // The note is wrapped to the terminal width; compare it as one line.
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+
+  it("shows the agent's own error and no log pointer", () => {
+    const copy = pingFailureCopy({ result: 'agent_failure', detail: 'Credit balance is too low' });
+    expect(flat(copy.note)).toContain('It said: "Credit balance is too low".');
+    expect(copy.assistHint).toContain('Credit balance is too low');
+    expect(flat(copy.note)).not.toContain('logs/nanoclaw.log');
+  });
+
+  it('says no reason was sent for the generic notice', () => {
+    const copy = pingFailureCopy({ result: 'agent_failure' });
+    expect(flat(copy.note)).toContain('It sent no reason.');
+    expect(flat(copy.note)).not.toContain('logs/nanoclaw.log');
   });
 });
