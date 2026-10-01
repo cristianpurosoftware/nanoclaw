@@ -181,6 +181,16 @@ export function attachAppContext(
 }
 
 /**
+ * Base64-encode attachment bytes. Adapters may return ArrayBuffer (Telegram
+ * since 4.39), whose toString() yields "[object ArrayBuffer]", not bytes.
+ */
+export function attachmentBytesToBase64(data: Buffer | ArrayBuffer | Uint8Array): string {
+  if (Buffer.isBuffer(data)) return data.toString('base64');
+  if (data instanceof Uint8Array) return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('base64');
+  return Buffer.from(data).toString('base64');
+}
+
+/**
  * Root-thread a top-level DM message: on platforms whose DM surface
  * materializes conversation threads (agent-view semantics), every top-level
  * DM message is the root of a conversation thread — replying in-thread and
@@ -465,8 +475,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         };
         if (att.fetchData) {
           try {
-            const buffer = await att.fetchData();
-            entry.data = buffer.toString('base64');
+            entry.data = attachmentBytesToBase64(await att.fetchData());
           } catch (err) {
             log.warn('Failed to download attachment', { type: att.type, err });
           }
