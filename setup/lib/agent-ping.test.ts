@@ -159,6 +159,18 @@ describe('ping outcome from raw ncl lines', () => {
     });
   });
 
+  it('keeps a received notice when ncl had to be killed', () => {
+    expect(pingOutcome(null, raw('Spending limit reached', true).toString(), '')).toEqual({
+      result: 'agent_failure',
+      detail: 'Spending limit reached',
+    });
+  });
+
+  it('does not take auth wording in a partial reply over the flagged notice', () => {
+    const stdout = raw('You are not logged in to GitHub').toString() + raw('Spending limit reached', true);
+    expect(pingOutcome(4, stdout, '')).toEqual({ result: 'agent_failure', detail: 'Spending limit reached' });
+  });
+
   it('hides the generic notice, which carries no reason', () => {
     expect(pingOutcome(4, raw(GENERIC_FAILURE_NOTICE, true).toString(), '')).toEqual({ result: 'agent_failure' });
   });

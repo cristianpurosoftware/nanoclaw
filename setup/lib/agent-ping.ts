@@ -112,11 +112,15 @@ function parseReplies(stdout: string): PingReply[] {
 /** Classify ncl's raw-lines output and pick the reason to show, if any. */
 export function pingOutcome(exitCode: number | null, stdout: string, stderr: string): PingOutcome {
   const replies = parseReplies(stdout);
-  const text = replies.map((r) => r.text).join('\n');
-  const result = classifyPingResult(exitCode, text, stderr);
+  const notices = replies.filter((r) => r.failureNotice);
+  // A flagged notice is the failure, even if the wrapper had to kill ncl, and
+  // only notices (not a partial reply before them) are checked for auth errors.
+  const code = exitCode ?? (notices.length > 0 ? 4 : null);
+  const text = (notices.length > 0 ? notices : replies).map((r) => r.text).join('\n');
+  const result = classifyPingResult(code, text, stderr);
   let detail: string | undefined;
   if (result === 'agent_failure') {
-    detail = sanitizeDetail(replies.find((r) => r.failureNotice)?.text ?? '');
+    detail = sanitizeDetail(notices[0]?.text ?? '');
   } else if (result === 'auth_error') {
     const hit = `${text}\n${stderr}`.split('\n').find((l) => AUTH_ERROR_PATTERNS.some((re) => re.test(l)));
     detail = sanitizeDetail(hit ?? '');
