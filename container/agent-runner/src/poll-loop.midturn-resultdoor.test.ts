@@ -661,32 +661,6 @@ describe('DB-visible sends gate the nudge', () => {
   );
 
   it.each(PROVIDER_MODES)(
-    'a progress send alone does not count as a reply: the unwrapped answer is still nudged (%s)',
-    async (provider, midTurn) => {
-      seedDest();
-      async function* events(): AsyncGenerator<ProviderEvent> {
-        yield { type: 'init', continuation: 's1' };
-        const { writeMessageOut } = await import('./db/messages-out.js');
-        writeMessageOut({
-          id: 'ack-1',
-          kind: 'chat',
-          platform_id: 'chan-1',
-          channel_type: 'discord',
-          thread_id: null,
-          content: JSON.stringify({ text: 'On it', progress: true }),
-        });
-        yield { type: 'result', text: 'The answer is 4.' };
-      }
-      const { query, pushes } = makeStubQuery(events());
-
-      await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
-
-      expect(nudges(pushes)).toHaveLength(1);
-      expect(informedNudges(pushes)).toHaveLength(0);
-    },
-  );
-
-  it.each(PROVIDER_MODES)(
     'a delegation send to another agent does not count as the user reply (%s)',
     async (provider, midTurn) => {
       seedDest();

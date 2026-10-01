@@ -1041,7 +1041,7 @@ function chatRowsWrittenSince(afterSeq: number, countAgentRows: boolean): Messag
         (message.seq ?? 0) > afterSeq &&
         message.kind === 'chat' &&
         (countAgentRows || message.channel_type !== 'agent') &&
-        !isAckRow(message.content),
+        !isReactionRow(message.content),
     );
   } catch (err) {
     log(`chatRowsWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1095,15 +1095,10 @@ export function buildInformedWrapNudge(
   );
 }
 
-/**
- * A reaction or a send_message flagged `progress` is a chat row too, but it
- * is an acknowledgement, not a reply: an agent that acks and then leaves its
- * answer unwrapped has still delivered nothing, so the nudge must fire.
- */
-function isAckRow(content: string): boolean {
+/** A reaction is a chat row too, but never a reply, so it is never quoted as one. */
+function isReactionRow(content: string): boolean {
   try {
-    const parsed = JSON.parse(content) as { operation?: unknown; progress?: unknown };
-    return parsed.operation === 'reaction' || parsed.progress === true;
+    return (JSON.parse(content) as { operation?: unknown }).operation === 'reaction';
   } catch {
     return false;
   }

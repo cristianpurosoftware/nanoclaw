@@ -75,11 +75,6 @@ export const sendMessage: McpToolDefinition = {
           description: 'Destination name (e.g., "family", "worker-1").',
         },
         text: { type: 'string', description: 'Message content' },
-        progress: {
-          type: 'boolean',
-          description:
-            'true for an acknowledgement or status update ("on it"). Your answer still has to be sent after it.',
-        },
       },
       required: ['to', 'text'],
     },
@@ -87,7 +82,6 @@ export const sendMessage: McpToolDefinition = {
   async handler(args) {
     const to = args.to as string;
     const text = args.text as string;
-    const progress = args.progress === true;
     if (!to) return err(`to is required. Options: ${destinationList()}`);
     if (!text) return err('text is required');
 
@@ -102,11 +96,10 @@ export const sendMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      // The flag tells the runner this is not the turn's reply.
-      content: JSON.stringify(progress ? { text, progress } : { text }),
+      content: JSON.stringify({ text }),
     });
 
-    log(`send_message: #${seq} → ${routing.resolvedName}${progress ? ' (progress)' : ''}`);
+    log(`send_message: #${seq} → ${routing.resolvedName}`);
     return ok(`Message sent to ${routing.resolvedName} (id: ${seq})`);
   },
 };
