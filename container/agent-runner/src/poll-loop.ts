@@ -665,7 +665,7 @@ export async function processQuery(
             // one the model sees what went out and decides; never a silent drop.
             pushRetry(
               toolSends.length > 0
-                ? buildInformedWrapNudge(toolSends, undelivered, names)
+                ? buildInformedWrapNudge(toolSends, undelivered, destinations)
                 : `<system>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
                     `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
                     `Your destinations: ${names}. ` +
@@ -1059,7 +1059,19 @@ const INFORMED_NUDGE_ROWS_MAX = 3;
  * answer `<internal>done</internal>` or send only what is missing. Quoting
  * the final text also ties a retry queued behind a follow-up to its turn.
  */
-export function buildInformedWrapNudge(rows: MessageOutRow[], finalText: string, names: string): string {
+export function buildInformedWrapNudge(
+  rows: MessageOutRow[],
+  finalText: string,
+  destinations: DestinationEntry[],
+): string {
+  const names = destinations.map((d) => d.name).join(', ');
+  // Name where each send went, so a reply sent to the wrong place is not taken as done.
+  const destinationOf = (row: MessageOutRow): string =>
+    destinations.find((d) =>
+      d.type === 'agent'
+        ? row.channel_type === 'agent' && row.platform_id === d.agentGroupId
+        : row.channel_type === d.channelType && row.platform_id === d.platformId,
+    )?.name ?? 'unknown';
   const clip = (text: string): string =>
     escapePromptXml(text.length > INFORMED_NUDGE_QUOTE_MAX ? `${text.slice(0, INFORMED_NUDGE_QUOTE_MAX)}…` : text);
   const sent = rows.slice(0, INFORMED_NUDGE_ROWS_MAX).map((row) => {
@@ -1071,14 +1083,14 @@ export function buildInformedWrapNudge(rows: MessageOutRow[], finalText: string,
     } catch {
       // Unparseable row: quote a placeholder.
     }
-    return `<sent_message>${clip(text || '[non-text message]')}</sent_message>`;
+    return `<sent_message to="${escapePromptXml(destinationOf(row))}">${clip(text || '[non-text message]')}</sent_message>`;
   });
   if (rows.length > INFORMED_NUDGE_ROWS_MAX) sent.push(`(+${rows.length - INFORMED_NUDGE_ROWS_MAX} more)`);
   return (
     `<system>Your final text was not delivered — it was not wrapped in <message to="name">...</message> blocks:\n` +
     `<undelivered_text>${clip(finalText)}</undelivered_text>\n` +
     `Earlier in that turn you already sent:\n${sent.join('\n')}\n` +
-    `If what was sent is the full reply, respond with only <internal>done</internal> and nothing more will be sent. ` +
+    `If what was sent is the full reply, to where it was owed, respond with only <internal>done</internal> and nothing more will be sent. ` +
     `Otherwise send only what is still missing, wrapped in <message to="name">...</message>, without repeating what already went out. ` +
     `Your destinations: ${escapePromptXml(names)}.</system>`
   );
@@ -1150,6 +1162,9 @@ export async function dispatchResultText(
   // undelivered reply.
   let sent = options?.midTurnSent ?? 0;
   let replied = options?.midTurnReplied ?? sent;
+  // Result blocks the mid-turn door never delivered: always nudge, even when
+  // something else streamed this turn.
+  let missed = 0;
   // <message to> blocks left inert in a task run — drives the same-turn
   // "use send_message" nudge in processQuery.
   const taskBlocks: TaskMessageBlock[] = [];
@@ -1208,6 +1223,7 @@ export async function dispatchResultText(
       } else {
         log(`<message to="${toName}"> in final result was not delivered this turn — nudging for a mid-turn resend`);
         scratchpadParts.push(`[not delivered — the result door does not send; to="${toName}"] ${body}`);
+        missed++;
       }
       continue;
     }
@@ -1227,7 +1243,7 @@ export async function dispatchResultText(
 
   // In a task run, plain final text is the NORMAL ending (it becomes the run
   // log) — never treat it as an undelivered reply or nudge the agent to wrap it.
-  const hasUnwrapped = !routing.taskRun && replied === 0 && !!scratchpad;
+  const hasUnwrapped = !routing.taskRun && (missed > 0 || (replied === 0 && !!scratchpad));
   if (hasUnwrapped) {
     log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
   }
