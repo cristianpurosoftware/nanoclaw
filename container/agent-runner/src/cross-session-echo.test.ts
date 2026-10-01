@@ -184,60 +184,6 @@ describe('routing (extractRouting)', () => {
 
     expect(extractRouting(getPendingMessages()).taskRun).toBe(false);
   });
-
-  it('agentOnly is true when every non-echo row came from an agent', () => {
-    insertMessage(
-      'a1',
-      'chat',
-      { sender: 'worker', text: 'done' },
-      { seq: 2, platformId: 'ag-1', channelType: 'agent' },
-    );
-    insertEcho('e1', { seq: 4 });
-
-    expect(extractRouting(getPendingMessages()).agentOnly).toBe(true);
-  });
-
-  it('agentOnly is false when a user row follows an agent row', () => {
-    insertMessage(
-      'a1',
-      'chat',
-      { sender: 'worker', text: 'done' },
-      { seq: 2, platformId: 'ag-1', channelType: 'agent' },
-    );
-    insertMessage(
-      'm1',
-      'chat',
-      { sender: 'Alice', text: 'and?' },
-      { seq: 4, platformId: 'C123', channelType: 'slack' },
-    );
-
-    const routing = extractRouting(getPendingMessages());
-    expect(routing.channelType).toBe('agent');
-    expect(routing.agentOnly).toBe(false);
-  });
-
-  it('agentOnly ignores user context rows that did not wake the turn', () => {
-    insertMessage(
-      'c1',
-      'chat',
-      { sender: 'Alice', text: 'ambient chat' },
-      { seq: 2, trigger: 0, platformId: 'C123', channelType: 'slack' },
-    );
-    insertMessage(
-      'a1',
-      'chat',
-      { sender: 'caller', text: 'Status?' },
-      { seq: 4, platformId: 'ag-1', channelType: 'agent' },
-    );
-
-    expect(extractRouting(getPendingMessages()).agentOnly).toBe(true);
-  });
-
-  it('agentOnly is false for an echo-only batch', () => {
-    insertEcho('e1', { seq: 2 });
-
-    expect(extractRouting(getPendingMessages()).agentOnly).toBe(false);
-  });
 });
 
 describe('command classification', () => {

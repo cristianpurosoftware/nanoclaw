@@ -265,9 +265,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     try {
       const result = await processQuery(
         query,
-        // agentOnly from the rows the provider actually sees: a /clear or a
-        // script-skipped task in the batch must not decide who is owed a reply.
-        { ...routing, agentOnly: extractRouting(keep).agentOnly },
+        routing,
         processingIds,
         config.providerName,
         config.provider.onExchangeComplete?.bind(config.provider),
@@ -390,8 +388,8 @@ export async function processQuery(
   // in-flight turn, and its result's nudge decision still describes the
   // turn that is streaming.
   let midTurnSent = 0;
-  // The subset of midTurnSent that answers the batch: a block to another
-  // agent only counts on an agent-only batch, otherwise it is delegation.
+  // The subset of midTurnSent that counts as the reply: blocks to another
+  // agent are left out (see answersBatch).
   let midTurnReplied = 0;
   // Outbound seq high-water mark at the turn boundary — a frame-local NUMBER,
   // not a content record. Two uses: (1) the mid-turn door recognizes a block
@@ -657,7 +655,7 @@ export async function processQuery(
           if (willRetryWrapping) {
             unwrappedNudged = true;
             // Everything that went out this turn, tool and door sends alike.
-            const sentThisTurn = chatRowsWrittenSince(turnStartSeq, routing.agentOnly === true);
+            const sentThisTurn = chatRowsWrittenSince(turnStartSeq);
             const destinations = getAllDestinations();
             const names = destinations.map((d) => d.name).join(', ');
             // A tool send can't be told apart from an "on it" ack, so after
@@ -830,7 +828,7 @@ export interface ResultDispatchOptions {
    * turns an unwrapped result after one into an informed nudge.
    */
   midTurnSent?: number;
-  /** The midTurnSent blocks that answer the batch (see answersBatch). Defaults to midTurnSent. */
+  /** The midTurnSent blocks that count as the reply (see answersBatch). Defaults to midTurnSent. */
   midTurnReplied?: number;
   /**
    * Outbound seq at the turn boundary. With `suppressDelivery`, a result block
@@ -895,7 +893,7 @@ const INTERNAL_SPAN_RE = /<internal\b[\s\S]*?<\/internal>/gi;
  */
 export interface MidTurnScanResult {
   delivered: number;
-  /** Delivered blocks that answer the batch (see answersBatch). */
+  /** Delivered blocks that count as the reply (see answersBatch). */
   replied: number;
   tail: string;
 }
@@ -952,19 +950,19 @@ export async function deliverMidTurnBlocks(
     }
     await sendToDestination(dest, body, routing);
     delivered++;
-    if (answersBatch(dest, routing)) replied++;
+    if (answersBatch(dest)) replied++;
     log(`Mid-turn delivery: <message to="${toName}"> (${body.length} chars)`);
   }
   return { delivered, replied, tail };
 }
 
 /**
- * Does a block sent to `dest` answer the batch? A message to another agent
- * does only when every row in the batch came from an agent; with a user row
- * in the batch it is delegation and the user's answer is still owed.
+ * Does a block sent to `dest` count as the reply? Not when it goes to another
+ * agent: that may be delegation, so unwrapped text after it still gets the
+ * nudge, which quotes the a2a send so a reply to a calling agent ends in done.
  */
-function answersBatch(dest: DestinationEntry, routing: RoutingContext): boolean {
-  return dest.type !== 'agent' || routing.agentOnly === true;
+function answersBatch(dest: DestinationEntry): boolean {
+  return dest.type !== 'agent';
 }
 
 const OPEN_INTERNAL_RE = /<internal\b/i;
@@ -1025,23 +1023,16 @@ function maxOutboundSeq(): number {
 }
 
 /**
- * Chat rows written to outbound.db after `afterSeq` that may be the turn's
- * reply: unlike the frame-local midTurnSent count, this sees MCP
- * send_message / send_file deliveries. Acks (reactions, progress sends) are
- * never the reply, nor is a message to another agent unless every row in the
- * batch came from an agent: with a user row in the batch an a2a send is
- * delegation. On a lookup error, return none: the plain nudge fires instead
- * of the informed one, never a silent drop.
+ * Chat rows written to outbound.db after `afterSeq`, for the informed nudge
+ * to quote: unlike the frame-local midTurnSent count, this sees MCP
+ * send_message / send_file deliveries. Reactions are left out. On a lookup
+ * error, return none: the plain nudge fires instead, never a silent drop.
  */
-function chatRowsWrittenSince(afterSeq: number, countAgentRows: boolean): MessageOutRow[] {
+function chatRowsWrittenSince(afterSeq: number): MessageOutRow[] {
   try {
     // ponytail: reuse the existing semantic read; add a cursor operation only if history scans show up in profiles.
     return getUndeliveredMessages().filter(
-      (message) =>
-        (message.seq ?? 0) > afterSeq &&
-        message.kind === 'chat' &&
-        (countAgentRows || message.channel_type !== 'agent') &&
-        !isReactionRow(message.content),
+      (message) => (message.seq ?? 0) > afterSeq && message.kind === 'chat' && !isReactionRow(message.content),
     );
   } catch (err) {
     log(`chatRowsWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1239,7 +1230,7 @@ export async function dispatchResultText(
     }
     await sendToDestination(dest, body, routing);
     sent++;
-    if (answersBatch(dest, routing)) replied++;
+    if (answersBatch(dest)) replied++;
   }
   if (lastIndex < text.length) {
     scratchpadParts.push(text.slice(lastIndex));

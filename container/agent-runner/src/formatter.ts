@@ -173,10 +173,6 @@ export interface RoutingContext {
   taskRun: boolean;
   /** Every non-echo row that woke this turn is a failure notice. */
   failureNoticeWake?: boolean;
-  /** Every row that woke this turn came from another agent. Only then does an
-   *  a2a send answer the batch; with a waking user row mixed in, the user's
-   *  answer is still owed. Absent means false (fail toward a nudge). */
-  agentOnly?: boolean;
 }
 
 /**
@@ -204,7 +200,6 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
     taskRun: messages.some((m) => m.kind === 'task') && messages.every((m) => m.kind === 'task' || isSessionEcho(m)),
     // Accumulated trigger=0 context rides along but did not wake the turn.
     failureNoticeWake: waking.length > 0 && waking.every(isFailureNotice),
-    agentOnly: waking.length > 0 && waking.every((m) => m.channel_type === 'agent'),
   };
 }
 

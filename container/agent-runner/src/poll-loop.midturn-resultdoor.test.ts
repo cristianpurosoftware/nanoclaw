@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './mailbox/sqlite/connection.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
-import { buildInformedWrapNudge, processQuery, runPollLoop } from './poll-loop.js';
-import { MockProvider } from './providers/mock.js';
+import { buildInformedWrapNudge, processQuery } from './poll-loop.js';
 import type { AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
 
 // Adversarial verification of the one-door contract for mid-turn delivery
@@ -661,7 +660,7 @@ describe('DB-visible sends gate the nudge', () => {
   );
 
   it.each(PROVIDER_MODES)(
-    'a delegation send to another agent does not count as the user reply (%s)',
+    'a delegation send to another agent is quoted, and the user reply is still owed (%s)',
     async (provider, midTurn) => {
       seedDest();
       async function* events(): AsyncGenerator<ProviderEvent> {
@@ -682,7 +681,7 @@ describe('DB-visible sends gate the nudge', () => {
       await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
 
       expect(nudges(pushes)).toHaveLength(1);
-      expect(informedNudges(pushes)).toHaveLength(0);
+      expect(informedNudges(pushes)[0]).toContain('>Check the arithmetic.</sent_message>');
     },
   );
 
@@ -704,40 +703,12 @@ describe('DB-visible sends gate the nudge', () => {
         yield { type: 'result', text: 'Replied via the tool.' };
       }
       const { query, pushes } = makeStubQuery(events());
-      const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent', agentOnly: true };
+      const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent' };
 
       await processQuery(query, agentRouting, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
 
       expect(nudges(pushes)).toHaveLength(1);
       expect(informedNudges(pushes)[0]).toContain('>Done.</sent_message>');
-    },
-  );
-
-  it.each(PROVIDER_MODES)(
-    'a batch led by an agent row but carrying a user row: an a2a send is not the user reply (%s)',
-    async (provider, midTurn) => {
-      seedDest();
-      async function* events(): AsyncGenerator<ProviderEvent> {
-        yield { type: 'init', continuation: 's1' };
-        const { writeMessageOut } = await import('./db/messages-out.js');
-        writeMessageOut({
-          id: 'a2a-1',
-          kind: 'chat',
-          platform_id: 'ag-worker',
-          channel_type: 'agent',
-          thread_id: null,
-          content: JSON.stringify({ text: 'Check the arithmetic.' }),
-        });
-        yield { type: 'result', text: 'The answer is 4.' };
-      }
-      const { query, pushes } = makeStubQuery(events());
-      // extractRouting of [agent row, user row]: routing follows the first row,
-      // but the batch is not agent-only.
-      const mixedRouting = { ...CHAT_ROUTING, platformId: 'ag-worker', channelType: 'agent', agentOnly: false };
-
-      await processQuery(query, mixedRouting, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
-
-      expect(nudges(pushes)).toHaveLength(1);
     },
   );
 
@@ -805,46 +776,9 @@ describe('capability=true keeps base result-door handling for door-skipped block
   });
 });
 
-// ── Runner commands in the batch do not decide who is owed a reply ──
-
-/** Answers the first prompt with an a2a tool send and unwrapped closing prose; records later pushes. */
-class AgentReplyProvider extends MockProvider {
-  pushes: string[] = [];
-  query(): AgentQuery {
-    const pushes = this.pushes;
-    let aborted = false;
-    let wake: (() => void) | null = null;
-    return {
-      push: (m: string) => {
-        pushes.push(m);
-        wake?.();
-      },
-      end: () => {},
-      abort: () => {
-        aborted = true;
-        wake?.();
-      },
-      events: (async function* (): AsyncGenerator<ProviderEvent> {
-        yield { type: 'init', continuation: 's1' };
-        const { writeMessageOut } = await import('./db/messages-out.js');
-        writeMessageOut({
-          id: 'a2a-reply',
-          kind: 'chat',
-          platform_id: 'ag-caller',
-          channel_type: 'agent',
-          thread_id: null,
-          content: JSON.stringify({ text: 'Done.' }),
-        });
-        yield { type: 'result', text: 'Replied via the tool.' };
-        while (!aborted) await new Promise<void>((r) => (wake = r));
-      })(),
-    };
-  }
-}
-
 describe('<message> blocks to another agent', () => {
   it.each(PROVIDER_MODES)(
-    'on a user turn a block to a worker is delegation: the unwrapped answer is still nudged (%s)',
+    'a block to a worker is never the reply: the unwrapped answer is still nudged (%s)',
     async (provider, midTurn) => {
       seedDest();
       seedAgentDest('worker', 'ag-worker');
@@ -860,7 +794,7 @@ describe('<message> blocks to another agent', () => {
 
       expect(deliveredTexts()).toEqual(['Check the arithmetic.']);
       expect(nudges(pushes)).toHaveLength(1);
-      expect(informedNudges(pushes)).toHaveLength(0);
+      expect(informedNudges(pushes)[0]).toContain('<sent_message to="worker">Check the arithmetic.</sent_message>');
     },
   );
 
@@ -919,7 +853,7 @@ describe('<message> blocks to another agent', () => {
   });
 
   it.each(PROVIDER_MODES)(
-    'on an agent-only batch a block back to the caller is the reply (%s)',
+    'a block back to a calling agent plus prose gets the informed nudge (%s)',
     async (provider, midTurn) => {
       seedAgentDest('caller', 'ag-caller');
       const reply = '<message to="caller">Done.</message>';
@@ -929,51 +863,14 @@ describe('<message> blocks to another agent', () => {
         yield { type: 'result', text: `${reply}Replied to the caller.` };
       }
       const { query, pushes } = makeStubQuery(events());
-      const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent', agentOnly: true };
+      const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent' };
 
       await processQuery(query, agentRouting, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
 
       expect(deliveredTexts()).toEqual(['Done.']);
-      expect(nudges(pushes)).toHaveLength(0);
+      expect(informedNudges(pushes)[0]).toContain('<sent_message to="caller">Done.</sent_message>');
     },
   );
-});
-
-describe('runner commands in the batch', () => {
-  it.each([
-    ['mid-turn-provider', 'mid-turn-complete'],
-    ['result-provider', 'result'],
-  ] as const)('a /clear riding with an agent request still counts the a2a reply (%s)', async (name, textDelivery) => {
-    const insert = getInboundDb().prepare(
-      `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, content)
-       VALUES (?, ?, 'chat', datetime('now'), 'pending', ?, ?, ?)`,
-    );
-    insert.run('m-clear', 2, 'chan-1', 'discord', JSON.stringify({ sender: 'Alice', text: '/clear' }));
-    insert.run('m-agent', 4, 'ag-caller', 'agent', JSON.stringify({ sender: 'caller', text: 'Status?' }));
-    const provider = new AgentReplyProvider();
-    const controller = new AbortController();
-    const loop = runPollLoop({
-      provider,
-      providerContract: { textDelivery, commands: { formatting: 'xml' } },
-      providerName: name,
-      cwd: '/tmp',
-      signal: controller.signal,
-    });
-
-    const deadline = Date.now() + 3000;
-    while (!getUndeliveredMessages().some((m) => m.id === 'a2a-reply')) {
-      if (Date.now() > deadline) throw new Error('a2a reply never written');
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    await new Promise((r) => setTimeout(r, 300)); // let the result dispatch run
-    controller.abort();
-    await loop.catch(() => {});
-
-    // Informed, not plain: a plain nudge would mean /clear skewed agentOnly
-    // and the a2a reply was not counted.
-    expect(nudges(provider.pushes)).toHaveLength(1);
-    expect(informedNudges(provider.pushes)).toHaveLength(1);
-  });
 });
 
 describe('buildInformedWrapNudge', () => {
