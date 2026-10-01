@@ -390,6 +390,9 @@ export async function processQuery(
   // in-flight turn, and its result's nudge decision still describes the
   // turn that is streaming.
   let midTurnSent = 0;
+  // The subset of midTurnSent that answers the batch: a block to another
+  // agent only counts on an agent-only batch, otherwise it is delegation.
+  let midTurnReplied = 0;
   // Outbound seq high-water mark at the turn boundary — a frame-local NUMBER,
   // not a content record. Two uses: (1) the mid-turn door recognizes a block
   // that is a verbatim repeat of a message already written to outbound.db
@@ -598,6 +601,7 @@ export async function processQuery(
         if (midTurnCompleteDelivery) {
           const scan = await deliverMidTurnBlocks(event.text, routing, turnStartSeq, midTurnTail);
           midTurnSent += scan.delivered;
+          midTurnReplied += scan.replied;
           midTurnTail = scan.tail;
         }
       } else if (event.type === 'result') {
@@ -616,6 +620,7 @@ export async function processQuery(
           const toolSends = chatRowsWrittenSince(turnStartSeq, routing.agentOnly === true);
           const { hasUnwrapped, taskBlocks, undelivered } = await dispatchResultText(resultText, routing, {
             midTurnSent,
+            midTurnReplied,
             // For mid-turn delivery providers the result door NEVER delivers
             // content: mid-turn streaming is the single content door. The
             // result door's remaining job is the nudge decision.
@@ -687,6 +692,7 @@ export async function processQuery(
         // buffer dies with the turn: a fragment that never closed is not
         // carried into the next turn — the wrap-nudge owns that case.
         midTurnSent = 0;
+        midTurnReplied = 0;
         turnStartSeq = maxOutboundSeq();
         midTurnTail = '';
         const next = queuedTurns.shift();
@@ -824,6 +830,8 @@ export interface ResultDispatchOptions {
    * turns an unwrapped result after one into an informed nudge.
    */
   midTurnSent?: number;
+  /** The midTurnSent blocks that answer the batch (see answersBatch). Defaults to midTurnSent. */
+  midTurnReplied?: number;
   /**
    * Providers declaring `textDelivery: 'mid-turn-complete'`: the result door NEVER delivers
    * content. Mid-turn streaming (parse-time block delivery plus cross-
@@ -881,6 +889,8 @@ const INTERNAL_SPAN_RE = /<internal\b[\s\S]*?<\/internal>/gi;
  */
 export interface MidTurnScanResult {
   delivered: number;
+  /** Delivered blocks that answer the batch (see answersBatch). */
+  replied: number;
   tail: string;
 }
 
@@ -890,7 +900,7 @@ export async function deliverMidTurnBlocks(
   turnStartSeq?: number,
   carry = '',
 ): Promise<MidTurnScanResult> {
-  if (routing.taskRun) return { delivered: 0, tail: '' };
+  if (routing.taskRun) return { delivered: 0, replied: 0, tail: '' };
   const input = carry + text;
   const tailStart = unresolvedTailStart(input);
   const settled = input.slice(0, tailStart);
@@ -908,6 +918,7 @@ export async function deliverMidTurnBlocks(
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
   let match: RegExpExecArray | null;
   let delivered = 0;
+  let replied = 0;
   while ((match = MESSAGE_RE.exec(visible)) !== null) {
     const toName = match[1];
     const rawBody = match[2];
@@ -935,9 +946,19 @@ export async function deliverMidTurnBlocks(
     }
     await sendToDestination(dest, body, routing);
     delivered++;
+    if (answersBatch(dest, routing)) replied++;
     log(`Mid-turn delivery: <message to="${toName}"> (${body.length} chars)`);
   }
-  return { delivered, tail };
+  return { delivered, replied, tail };
+}
+
+/**
+ * Does a block sent to `dest` answer the batch? A message to another agent
+ * does only when every row in the batch came from an agent; with a user row
+ * in the batch it is delegation and the user's answer is still owed.
+ */
+function answersBatch(dest: DestinationEntry, routing: RoutingContext): boolean {
+  return dest.type !== 'agent' || routing.agentOnly === true;
 }
 
 const OPEN_INTERNAL_RE = /<internal\b/i;
@@ -1121,6 +1142,7 @@ export async function dispatchResultText(
   // text with no (new) blocks after a mid-turn delivery is scratchpad, not an
   // undelivered reply.
   let sent = options?.midTurnSent ?? 0;
+  let replied = options?.midTurnReplied ?? sent;
   // <message to> blocks left inert in a task run — drives the same-turn
   // "use send_message" nudge in processQuery.
   const taskBlocks: TaskMessageBlock[] = [];
@@ -1181,6 +1203,7 @@ export async function dispatchResultText(
     }
     await sendToDestination(dest, body, routing);
     sent++;
+    if (answersBatch(dest, routing)) replied++;
   }
   if (lastIndex < text.length) {
     scratchpadParts.push(text.slice(lastIndex));
@@ -1194,7 +1217,7 @@ export async function dispatchResultText(
 
   // In a task run, plain final text is the NORMAL ending (it becomes the run
   // log) — never treat it as an undelivered reply or nudge the agent to wrap it.
-  const hasUnwrapped = !routing.taskRun && sent === 0 && !!scratchpad;
+  const hasUnwrapped = !routing.taskRun && replied === 0 && !!scratchpad;
   if (hasUnwrapped) {
     log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
   }

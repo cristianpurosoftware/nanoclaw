@@ -45,6 +45,15 @@ function seedDest(name = 'discord-main', channelType = 'discord', platformId = '
     .run(name, name, channelType, platformId);
 }
 
+function seedAgentDest(name: string, agentGroupId: string): void {
+  getInboundDb()
+    .prepare(
+      `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+       VALUES (?, ?, 'agent', NULL, NULL, ?)`,
+    )
+    .run(name, name, agentGroupId);
+}
+
 function removeDest(name: string): void {
   getInboundDb().prepare('DELETE FROM destinations WHERE name = ?').run(name);
 }
@@ -860,6 +869,49 @@ class AgentReplyProvider extends MockProvider {
     };
   }
 }
+
+describe('<message> blocks to another agent', () => {
+  it.each(PROVIDER_MODES)(
+    'on a user turn a block to a worker is delegation: the unwrapped answer is still nudged (%s)',
+    async (provider, midTurn) => {
+      seedDest();
+      seedAgentDest('worker', 'ag-worker');
+      const delegation = '<message to="worker">Check the arithmetic.</message>';
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        if (midTurn) yield { type: 'text', text: delegation };
+        yield { type: 'result', text: `${delegation}The answer is 4.` };
+      }
+      const { query, pushes } = makeStubQuery(events());
+
+      await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['Check the arithmetic.']);
+      expect(nudges(pushes)).toHaveLength(1);
+      expect(informedNudges(pushes)).toHaveLength(0);
+    },
+  );
+
+  it.each(PROVIDER_MODES)(
+    'on an agent-only batch a block back to the caller is the reply (%s)',
+    async (provider, midTurn) => {
+      seedAgentDest('caller', 'ag-caller');
+      const reply = '<message to="caller">Done.</message>';
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        if (midTurn) yield { type: 'text', text: reply };
+        yield { type: 'result', text: `${reply}Replied to the caller.` };
+      }
+      const { query, pushes } = makeStubQuery(events());
+      const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent', agentOnly: true };
+
+      await processQuery(query, agentRouting, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['Done.']);
+      expect(nudges(pushes)).toHaveLength(0);
+    },
+  );
+});
 
 describe('runner commands in the batch', () => {
   it.each([
