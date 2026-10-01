@@ -54,6 +54,10 @@ import { INSTANCE_KEY_RE, registerChannelAdapter } from './channel-registry.js';
 
 const PLATFORM_ID = 'local';
 
+// Copy of the runner's FAILURE_NOTICE_FIELD (container/agent-runner/src/formatter.ts);
+// cli.test.ts pins the two so a rename fails a test.
+export const FAILURE_NOTICE_FIELD = 'failureNotice';
+
 /**
  * Terminal transport: every line the operator types is for the agent
  * (pattern '.'), the socket is owner-only so senders are trusted ('public'),
@@ -153,7 +157,7 @@ function createAdapter(): ChannelAdapter {
       // a failed run from a real reply without matching notice text.
       const failureNotice = isFailureNotice(message) || undefined;
       try {
-        client.write(JSON.stringify({ text, failureNotice }) + '\n');
+        client.write(JSON.stringify({ text, [FAILURE_NOTICE_FIELD]: failureNotice }) + '\n');
       } catch (err) {
         log.warn('Failed to write to CLI client', { err });
       }
@@ -313,7 +317,7 @@ function extractText(message: OutboundMessage): string | null {
 
 function isFailureNotice(message: OutboundMessage): boolean {
   const content = message.content as Record<string, unknown> | undefined;
-  return typeof content === 'object' && content !== null && content.failureNotice === true;
+  return typeof content === 'object' && content !== null && content[FAILURE_NOTICE_FIELD] === true;
 }
 
 registerChannelAdapter('cli', { factory: createAdapter, defaults: CLI_DEFAULTS });

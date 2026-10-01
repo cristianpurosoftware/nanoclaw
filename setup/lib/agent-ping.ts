@@ -1,9 +1,8 @@
 /**
  * Round-trip check against the CLI Unix socket.
  *
- * Shared by `setup/verify.ts` (end-of-run health check) and `setup/auto.ts`
- * (confirm the freshly-wired agent actually responds before prompting the
- * user to chat with it).
+ * Used by `setup/auto.ts` to confirm the freshly-wired agent actually
+ * responds before prompting the user to chat with it.
  *
  * Exit-code contract follows `scripts/chat.ts`:
  *   0  → got a reply on stdout
@@ -17,6 +16,9 @@ import { spawn } from 'child_process';
 import * as setupLog from '../logs.js';
 
 export const PING_AGENT_FOLDER = 'ping_test';
+
+// Longer than chat.ts's SILENCE_MS (2s), so a finished reply gets to exit.
+const PING_EXIT_GRACE_MS = 3_000;
 
 export type PingResult = 'ok' | 'no_reply' | 'socket_error' | 'auth_error' | 'agent_failure';
 
@@ -63,12 +65,21 @@ export function pingCliAgent(timeoutMs = 30_000): Promise<PingResult> {
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const timer = setTimeout(() => {
+    let graceUsed = false;
+    // A reply already printed means chat.ts is in its 2s silence wait; let it
+    // exit so its code (0 vs 4) still decides the result.
+    const onTimeout = () => {
       if (settled) return;
+      if (!graceUsed && stdout.trim().length > 0) {
+        graceUsed = true;
+        timer = setTimeout(onTimeout, PING_EXIT_GRACE_MS);
+        return;
+      }
       settled = true;
       child.kill('SIGKILL');
-      resolve('no_reply');
-    }, timeoutMs);
+      resolve(classifyPingResult(null, stdout, stderr));
+    };
+    let timer = setTimeout(onTimeout, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf-8');

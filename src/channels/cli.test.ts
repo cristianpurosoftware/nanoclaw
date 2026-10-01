@@ -31,7 +31,7 @@ vi.mock('../config.js', async () => {
   return { ...actual, DATA_DIR: TEST_DIR };
 });
 
-import './cli.js';
+import { FAILURE_NOTICE_FIELD } from './cli.js';
 import { getChannelAdapterExact, initChannelAdapters, teardownChannelAdapters } from './channel-registry.js';
 
 let nextEvent: ((event: InboundEvent) => void) | null = null;
@@ -100,9 +100,14 @@ async function deliverToChat(content: Record<string, unknown>): Promise<Record<s
     socket.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
       const idx = buffer.indexOf('\n');
-      if (idx >= 0) resolve(JSON.parse(buffer.slice(0, idx)));
+      if (idx < 0) return;
+      const raw = buffer.slice(0, idx);
+      Promise.resolve()
+        .then(() => JSON.parse(raw))
+        .then(resolve, reject);
     });
     socket.once('error', reject);
+    socket.once('close', () => reject(new Error('socket closed before a line arrived')));
   });
   await new Promise<void>((resolve) => {
     nextChat = resolve;
@@ -125,5 +130,12 @@ describe('cli channel: chat delivery', () => {
 
   it('sends a normal reply without the flag', async () => {
     expect(await deliverToChat({ text: 'pong' })).toEqual({ text: 'pong' });
+  });
+});
+
+describe('cli channel: failure flag name', () => {
+  it('matches the runner constant', () => {
+    const runner = fs.readFileSync(path.join(process.cwd(), 'container/agent-runner/src/formatter.ts'), 'utf-8');
+    expect(runner.match(/export const FAILURE_NOTICE_FIELD = '([^']+)'/)?.[1]).toBe(FAILURE_NOTICE_FIELD);
   });
 });
