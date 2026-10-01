@@ -109,10 +109,12 @@ async function deliverToChat(content: Record<string, unknown>): Promise<Record<s
     socket.once('error', reject);
     socket.once('close', () => reject(new Error('socket closed before a line arrived')));
   });
-  await new Promise<void>((resolve) => {
+  const inbound = new Promise<void>((resolve) => {
     nextChat = resolve;
     socket.write(JSON.stringify({ text: 'ping' }) + '\n');
   });
+  // A socket failure before the inbound callback rejects here instead of hanging.
+  await Promise.race([inbound, line.then(() => undefined)]);
   await getChannelAdapterExact('cli')!.deliver('local', null, { kind: 'chat', content });
   const received = await line;
   socket.end();
@@ -134,8 +136,10 @@ describe('cli channel: chat delivery', () => {
 });
 
 describe('cli channel: failure flag name', () => {
-  it('matches the runner constant', () => {
-    const runner = fs.readFileSync(path.join(process.cwd(), 'container/agent-runner/src/formatter.ts'), 'utf-8');
-    expect(runner.match(/export const FAILURE_NOTICE_FIELD = '([^']+)'/)?.[1]).toBe(FAILURE_NOTICE_FIELD);
+  it('matches the runner constant and the ncl client copy', () => {
+    for (const file of ['container/agent-runner/src/formatter.ts', 'scripts/chat.ts']) {
+      const src = fs.readFileSync(path.join(process.cwd(), file), 'utf-8');
+      expect(src.match(/const FAILURE_NOTICE_FIELD = '([^']+)'/)?.[1], file).toBe(FAILURE_NOTICE_FIELD);
+    }
   });
 });

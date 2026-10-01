@@ -55,7 +55,7 @@ import { INSTANCE_KEY_RE, registerChannelAdapter } from './channel-registry.js';
 const PLATFORM_ID = 'local';
 
 // Copy of the runner's FAILURE_NOTICE_FIELD (container/agent-runner/src/formatter.ts);
-// cli.test.ts pins the two so a rename fails a test.
+// cli.test.ts pins it to that and to scripts/chat.ts so a rename fails a test.
 export const FAILURE_NOTICE_FIELD = 'failureNotice';
 
 /**

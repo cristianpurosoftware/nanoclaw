@@ -18,6 +18,8 @@ import path from 'path';
 
 import { DATA_DIR } from '../src/config.js';
 
+// Same field the CLI channel forwards; src/channels/cli.test.ts pins the copies.
+const FAILURE_NOTICE_FIELD = 'failureNotice';
 const SILENCE_MS = 2000; // exit after this much quiet time following the first reply
 const TOTAL_TIMEOUT_MS = 120_000; // hard stop
 
@@ -83,7 +85,7 @@ function main(): void {
         if (typeof msg.text === 'string') {
           process.stdout.write(msg.text + '\n');
           firstReplySeen = true;
-          if (msg.failureNotice === true) failureNoticeSeen = true;
+          if (msg[FAILURE_NOTICE_FIELD] === true) failureNoticeSeen = true;
           if (hardTimer) {
             clearTimeout(hardTimer);
             hardTimer = null;
