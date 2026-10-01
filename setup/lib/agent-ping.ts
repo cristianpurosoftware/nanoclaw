@@ -9,6 +9,7 @@
  *   0  → got a reply on stdout
  *   2  → socket unreachable (service not running or wrong checkout)
  *   3  → no reply before chat.ts's own 120s hard stop
+ *   4  → the reply was the runner's failure notice (the agent run failed)
  * This wrapper also guards with its own timeout in case chat.ts hangs.
  */
 import { spawn } from 'child_process';
@@ -17,12 +18,23 @@ import * as setupLog from '../logs.js';
 
 export const PING_AGENT_FOLDER = 'ping_test';
 
-export type PingResult = 'ok' | 'no_reply' | 'socket_error' | 'auth_error';
+export type PingResult = 'ok' | 'no_reply' | 'socket_error' | 'auth_error' | 'agent_failure';
+
+const PING_HINTS: Record<Exclude<PingResult, 'ok'>, string> = {
+  no_reply: 'no reply in time; check logs/nanoclaw.log',
+  socket_error: 'service not listening on data/cli.sock; restart it',
+  auth_error: 'model credentials rejected; check them, then logs/nanoclaw.log',
+  agent_failure: 'agent run failed; check the model credentials, then logs/nanoclaw.log',
+};
 
 // The only setup check that goes through the container, gateway and model.
 // Log it so a failed reply isn't hidden behind earlier successes.
 export function logFirstChat(result: PingResult, durationMs: number): void {
-  setupLog.step('first-chat', result === 'ok' ? 'success' : 'failed', durationMs, { RESULT: result });
+  if (result === 'ok') {
+    setupLog.step('first-chat', 'success', durationMs, { RESULT: result });
+    return;
+  }
+  setupLog.step('first-chat', 'failed', durationMs, { RESULT: result, HINT: PING_HINTS[result] });
 }
 
 export function classifyPingResult(exitCode: number | null, stdout: string, stderr = ''): PingResult {
@@ -38,6 +50,7 @@ export function classifyPingResult(exitCode: number | null, stdout: string, stde
     return 'auth_error';
   }
   if (exitCode === 2) return 'socket_error';
+  if (exitCode === 4) return 'agent_failure';
   if (exitCode === 0 && stdout.trim().length > 0) return 'ok';
   return 'no_reply';
 }

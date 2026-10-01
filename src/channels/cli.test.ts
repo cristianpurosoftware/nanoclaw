@@ -10,6 +10,10 @@
  * in handleLine (or the instance parse in parseAddress) and the first case
  * goes red; drop the `log.warn` on a rejected `to.instance` and the last case
  * goes red.
+ *
+ * Chat delivery forwards the runner's failureNotice flag so the setup ping
+ * can tell a failed run from a real reply. Kill condition: drop the flag from
+ * deliver() and the failure-notice case goes red.
  */
 import fs from 'fs';
 import net from 'net';
@@ -28,9 +32,29 @@ vi.mock('../config.js', async () => {
 });
 
 import './cli.js';
-import { initChannelAdapters, teardownChannelAdapters } from './channel-registry.js';
+import { getChannelAdapterExact, initChannelAdapters, teardownChannelAdapters } from './channel-registry.js';
 
 let nextEvent: ((event: InboundEvent) => void) | null = null;
+let nextChat: (() => void) | null = null;
+
+beforeAll(async () => {
+  fs.mkdirSync(TEST_DIR, { recursive: true });
+  await initChannelAdapters(() => ({
+    onInbound() {
+      nextChat?.();
+    },
+    onInboundEvent(event) {
+      nextEvent?.(event);
+    },
+    onMetadata() {},
+    onAction() {},
+  }));
+});
+
+afterAll(async () => {
+  await teardownChannelAdapters();
+  fs.rmSync(TEST_DIR, { recursive: true, force: true });
+});
 
 /** Write one routed (`to`-bearing) line over the socket; resolve with the event the adapter handed the host. */
 function routed(to: Record<string, unknown>): Promise<InboundEvent> {
@@ -44,23 +68,6 @@ function routed(to: Record<string, unknown>): Promise<InboundEvent> {
 }
 
 describe('cli channel: routed message carries to.instance', () => {
-  beforeAll(async () => {
-    fs.mkdirSync(TEST_DIR, { recursive: true });
-    await initChannelAdapters(() => ({
-      onInbound() {},
-      onInboundEvent(event) {
-        nextEvent?.(event);
-      },
-      onMetadata() {},
-      onAction() {},
-    }));
-  });
-
-  afterAll(async () => {
-    await teardownChannelAdapters();
-    fs.rmSync(TEST_DIR, { recursive: true, force: true });
-  });
-
   const to = { channelType: 'telegram', platformId: 'telegram:42', threadId: null };
 
   it('stamps a named instance onto the InboundEvent', async () => {
@@ -82,5 +89,41 @@ describe('cli channel: routed message carries to.instance', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/** Connect a chat client, deliver one outbound content object, resolve with the line the client reads. */
+async function deliverToChat(content: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const socket = net.connect(path.join(TEST_DIR, 'cli.sock'));
+  const line = new Promise<Record<string, unknown>>((resolve, reject) => {
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const idx = buffer.indexOf('\n');
+      if (idx >= 0) resolve(JSON.parse(buffer.slice(0, idx)));
+    });
+    socket.once('error', reject);
+  });
+  await new Promise<void>((resolve) => {
+    nextChat = resolve;
+    socket.write(JSON.stringify({ text: 'ping' }) + '\n');
+  });
+  await getChannelAdapterExact('cli')!.deliver('local', null, { kind: 'chat', content });
+  const received = await line;
+  socket.end();
+  return received;
+}
+
+describe('cli channel: chat delivery', () => {
+  it('forwards the failureNotice flag on a runner failure notice', async () => {
+    const line = await deliverToChat({
+      text: 'The agent run failed. Check the logs for details.',
+      failureNotice: true,
+    });
+    expect(line).toEqual({ text: 'The agent run failed. Check the logs for details.', failureNotice: true });
+  });
+
+  it('sends a normal reply without the flag', async () => {
+    expect(await deliverToChat({ text: 'pong' })).toEqual({ text: 'pong' });
   });
 });

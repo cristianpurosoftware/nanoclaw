@@ -655,11 +655,15 @@ async function main(): Promise<void> {
           msg:
             ping === 'socket_error'
               ? "NanoClaw service isn't listening on its CLI socket."
-              : 'No reply from the assistant within 30 seconds.',
+              : ping === 'agent_failure' || ping === 'auth_error'
+                ? 'The assistant replied with a failure notice instead of an answer.'
+                : 'No reply from the assistant within 30 seconds.',
           hint:
             ping === 'socket_error'
               ? 'Socket at data/cli.sock did not accept a connection.'
-              : 'Agent container may be failing to start or authenticate.',
+              : ping === 'agent_failure' || ping === 'auth_error'
+                ? 'The agent run failed; model credentials are the usual cause. See logs/nanoclaw.log.'
+                : 'Agent container may be failing to start or authenticate.',
         });
       }
     }
@@ -886,7 +890,11 @@ async function confirmAssistantResponds(): Promise<PingResult> {
     s.stop(`${k.bold(fitToWidth('Your assistant is ready.', suffix))}${k.dim(suffix)}`);
   } else {
     const msg =
-      result === 'socket_error' ? "Couldn't reach the NanoClaw service." : "Your assistant didn't reply in time.";
+      result === 'socket_error'
+        ? "Couldn't reach the NanoClaw service."
+        : result === 'agent_failure' || result === 'auth_error'
+          ? 'Your assistant started, but its run failed.'
+          : "Your assistant didn't reply in time.";
     s.stop(`${k.bold(fitToWidth(msg, suffix))}${k.dim(suffix)}`, 1);
   }
   return result;
@@ -904,10 +912,15 @@ function renderPingFailureNote(result: PingResult): void {
           `  macOS:  launchctl kickstart -k gui/$(id -u)/${getLaunchdLabel()}`,
           `  Linux:  systemctl --user restart ${getSystemdUnit()}`,
         ].join('\n')
-      : wrapForGutter(
-          'No reply from your assistant within 30 seconds. Check `logs/nanoclaw.log` for clues, then try `pnpm run chat hi`.',
-          6,
-        );
+      : result === 'agent_failure' || result === 'auth_error'
+        ? wrapForGutter(
+            'Your assistant answered with an error instead of a reply. The model credentials are the usual cause: check them, look in `logs/nanoclaw.log` for the error, then try `pnpm run chat hi`.',
+            6,
+          )
+        : wrapForGutter(
+            'No reply from your assistant within 30 seconds. Check `logs/nanoclaw.log` for clues, then try `pnpm run chat hi`.',
+            6,
+          );
   note(body, 'Skipping the first chat');
 }
 

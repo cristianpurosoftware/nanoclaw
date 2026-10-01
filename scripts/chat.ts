@@ -7,6 +7,9 @@
  * Sends the message through the CLI channel (Unix socket) to the wired agent.
  * Reads replies until the stream goes quiet, then exits.
  *
+ * Exit codes: 0 reply, 2 socket unreachable, 3 no reply,
+ * 4 a reply was the runner's failure notice (the agent run failed).
+ *
  * Preconditions: NanoClaw host service running, an agent group wired to
  * `cli/local` via `/init-first-agent` or `/manage-channels`.
  */
@@ -44,6 +47,7 @@ function main(): void {
   });
 
   let firstReplySeen = false;
+  let failureNoticeSeen = false;
   let silenceTimer: NodeJS.Timeout | null = null;
   let hardTimer: NodeJS.Timeout | null = null;
 
@@ -51,7 +55,7 @@ function main(): void {
     if (silenceTimer) clearTimeout(silenceTimer);
     silenceTimer = setTimeout(() => {
       socket.end();
-      process.exit(0);
+      process.exit(failureNoticeSeen ? 4 : 0);
     }, SILENCE_MS);
   }
 
@@ -79,6 +83,7 @@ function main(): void {
         if (typeof msg.text === 'string') {
           process.stdout.write(msg.text + '\n');
           firstReplySeen = true;
+          if (msg.failureNotice === true) failureNoticeSeen = true;
           if (hardTimer) {
             clearTimeout(hardTimer);
             hardTimer = null;
@@ -94,7 +99,7 @@ function main(): void {
   socket.on('close', () => {
     if (silenceTimer) clearTimeout(silenceTimer);
     if (hardTimer) clearTimeout(hardTimer);
-    process.exit(firstReplySeen ? 0 : 3);
+    process.exit(!firstReplySeen ? 3 : failureNoticeSeen ? 4 : 0);
   });
 }
 

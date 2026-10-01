@@ -39,10 +39,35 @@ describe('classifyPingResult', () => {
 
   it('treats empty output as no reply', () => {
     expect(classifyPingResult(0, '')).toBe('no_reply');
+    expect(classifyPingResult(0, '  \n')).toBe('no_reply');
+  });
+
+  it('treats a failure notice (chat exit 4) as an agent failure, not ok', () => {
+    expect(classifyPingResult(4, 'The agent run failed. Check the logs for details.\n')).toBe('agent_failure');
+  });
+
+  it('keeps auth_error for a failure notice that names an auth problem', () => {
+    expect(classifyPingResult(4, 'Invalid API key · Please run /login')).toBe('auth_error');
   });
 });
 
 it('logs the first-chat ping result to setup.log', () => {
   logFirstChat('no_reply', 1200);
-  expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'failed', 1200, { RESULT: 'no_reply' });
+  expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'failed', 1200, {
+    RESULT: 'no_reply',
+    HINT: expect.stringContaining('logs/nanoclaw.log'),
+  });
+});
+
+it('logs an agent failure as failed with a what-to-do hint', () => {
+  logFirstChat('agent_failure', 900);
+  expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'failed', 900, {
+    RESULT: 'agent_failure',
+    HINT: expect.stringContaining('credentials'),
+  });
+});
+
+it('logs ok as success without a hint', () => {
+  logFirstChat('ok', 500);
+  expect(setupLog.step).toHaveBeenCalledWith('first-chat', 'success', 500, { RESULT: 'ok' });
 });
