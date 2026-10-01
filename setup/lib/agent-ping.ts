@@ -31,7 +31,7 @@ export interface PingOutcome {
 }
 
 // The runner's notice when it has no error of its own to report; it tells the
-// user nothing, so it is not shown. agent-ping.test.ts pins it to poll-loop.ts.
+// user nothing, so it is not shown. agent-ping.test.ts pins it to the runner.
 export const GENERIC_FAILURE_NOTICE = 'The agent run failed. Check the logs for details.';
 const DETAIL_MAX_CHARS = 160;
 
@@ -53,37 +53,58 @@ export function logFirstChat(outcome: PingOutcome, durationMs: number): void {
   setupLog.step('first-chat', 'failed', durationMs, { RESULT: result, DETAIL: detail, HINT: PING_HINTS[result] });
 }
 
-/** First line of a failed reply, unless it is the generic notice. */
-export function failureDetail(stdout: string): string | undefined {
-  const line = stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  if (!line || line === GENERIC_FAILURE_NOTICE) return undefined;
-  return line.length > DETAIL_MAX_CHARS ? `${line.slice(0, DETAIL_MAX_CHARS - 1)}…` : line;
-}
-
-function toOutcome(result: PingResult, stdout: string): PingOutcome {
-  if (result !== 'agent_failure' && result !== 'auth_error') return { result };
-  return { result, detail: failureDetail(stdout) };
-}
+const AUTH_ERROR_PATTERNS = [
+  /Invalid bearer token/i,
+  /authentication[_ ]error/i,
+  /Failed to authenticate/i,
+  /Please run \/login/i,
+  /Not logged in/i,
+  /Invalid API key/i,
+];
 
 export function classifyPingResult(exitCode: number | null, stdout: string, stderr = ''): PingResult {
   const output = `${stdout}\n${stderr}`;
-  if (
-    /Invalid bearer token/i.test(output) ||
-    /authentication[_ ]error/i.test(output) ||
-    /Failed to authenticate/i.test(output) ||
-    /Please run \/login/i.test(output) ||
-    /Not logged in/i.test(output) ||
-    /Invalid API key/i.test(output)
-  ) {
-    return 'auth_error';
-  }
+  if (AUTH_ERROR_PATTERNS.some((re) => re.test(output))) return 'auth_error';
   if (exitCode === 2) return 'socket_error';
   if (exitCode === 4) return 'agent_failure';
   if (exitCode === 0 && stdout.trim().length > 0) return 'ok';
   return 'no_reply';
+}
+
+const TERMINAL_ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|[\x00-\x1f\x7f-\x9f]/g;
+// Long token-like runs (keys, bearer tokens, JWT parts) never belong on screen or in setup.log.
+const SECRET_LIKE = /[A-Za-z0-9_\-+=]{24,}/g;
+
+/** Make an agent error line safe to print and log: no escapes, no secrets, short. */
+export function sanitizeDetail(line: string): string | undefined {
+  const clean = line.replace(TERMINAL_ESCAPES, '').replace(SECRET_LIKE, '[redacted]').trim();
+  if (!clean || clean === GENERIC_FAILURE_NOTICE) return undefined;
+  return clean.length > DETAIL_MAX_CHARS ? `${clean.slice(0, DETAIL_MAX_CHARS - 1)}…` : clean;
+}
+
+function lines(text: string): string[] {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
+/**
+ * The reason to show for a failed ping. ncl prints failure notices on stderr,
+ * so a partial reply on stdout is never mistaken for the error.
+ */
+export function failureDetail(result: PingResult, stdout: string, stderr: string): string | undefined {
+  if (result === 'agent_failure') return sanitizeDetail(lines(stderr)[0] ?? '');
+  if (result === 'auth_error') {
+    const hit = [...lines(stderr), ...lines(stdout)].find((l) => AUTH_ERROR_PATTERNS.some((re) => re.test(l)));
+    return hit ? sanitizeDetail(hit) : undefined;
+  }
+  return undefined;
+}
+
+function toOutcome(result: PingResult, stdout: string, stderr: string): PingOutcome {
+  const detail = failureDetail(result, stdout, stderr);
+  return detail ? { result, detail } : { result };
 }
 
 export function pingCliAgent(timeoutMs = 30_000): Promise<PingOutcome> {
@@ -96,18 +117,18 @@ export function pingCliAgent(timeoutMs = 30_000): Promise<PingOutcome> {
     let stderr = '';
     let settled = false;
     let graceUsed = false;
-    // A reply already printed means chat.ts is in its 2s silence wait; let it
-    // exit so its code (0 vs 4) still decides the result.
+    // A reply or notice already printed means chat.ts is in its 2s silence
+    // wait; let it exit so its code (0 vs 4) still decides the result.
     const onTimeout = () => {
       if (settled) return;
-      if (!graceUsed && stdout.trim().length > 0) {
+      if (!graceUsed && `${stdout}${stderr}`.trim().length > 0) {
         graceUsed = true;
         timer = setTimeout(onTimeout, PING_EXIT_GRACE_MS);
         return;
       }
       settled = true;
       child.kill('SIGKILL');
-      resolve(toOutcome(classifyPingResult(null, stdout, stderr), stdout));
+      resolve(toOutcome(classifyPingResult(null, stdout, stderr), stdout, stderr));
     };
     let timer = setTimeout(onTimeout, timeoutMs);
 
@@ -121,7 +142,7 @@ export function pingCliAgent(timeoutMs = 30_000): Promise<PingOutcome> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(toOutcome(classifyPingResult(code, stdout, stderr), stdout));
+      resolve(toOutcome(classifyPingResult(code, stdout, stderr), stdout, stderr));
     });
     child.on('error', () => {
       if (settled) return;

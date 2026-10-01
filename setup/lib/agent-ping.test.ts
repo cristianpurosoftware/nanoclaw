@@ -8,6 +8,7 @@ import * as setupLog from '../logs.js';
 import {
   classifyPingResult,
   failureDetail,
+  sanitizeDetail,
   GENERIC_FAILURE_NOTICE,
   logFirstChat,
   pingCliAgent,
@@ -134,32 +135,46 @@ describe('pingCliAgent timeout', () => {
 });
 
 describe('failure detail', () => {
-  it('returns the agent error line, trimmed', () => {
-    expect(failureDetail('  Invalid API key · Fix external API key  \n')).toBe(
-      'Invalid API key · Fix external API key',
-    );
+  it('takes the notice from stderr, not a partial reply on stdout', () => {
+    expect(
+      failureDetail('agent_failure', 'Finished the first step.\n', '403 billing_error: Spending limit reached.\n'),
+    ).toBe('403 billing_error: Spending limit reached.');
   });
 
   it('hides the generic notice, which carries no reason', () => {
-    expect(failureDetail(`${GENERIC_FAILURE_NOTICE}\n`)).toBeUndefined();
-    expect(failureDetail('')).toBeUndefined();
+    expect(failureDetail('agent_failure', '', `${GENERIC_FAILURE_NOTICE}\n`)).toBeUndefined();
+    expect(failureDetail('agent_failure', '', '')).toBeUndefined();
+  });
+
+  it('uses the matching line for an auth error on either stream', () => {
+    expect(failureDetail('auth_error', '', 'Authentication error: invalid account\n')).toBe(
+      'Authentication error: invalid account',
+    );
+    expect(failureDetail('auth_error', 'hello\nInvalid API key · Please run /login\n', '')).toBe(
+      'Invalid API key · Please run /login',
+    );
+  });
+
+  it('strips terminal escapes and redacts token-like strings', () => {
+    expect(sanitizeDetail('\x1b]52;c;VEVTVA==\x07\x1b[31mInvalid API key\x1b[0m')).toBe('Invalid API key');
+    expect(sanitizeDetail('Rejected: Bearer synthetic-review-token-0123456789')).toBe('Rejected: Bearer [redacted]');
   });
 
   it('truncates a long line', () => {
-    const detail = failureDetail('x'.repeat(500));
+    const detail = sanitizeDetail('word '.repeat(100));
     expect(detail).toHaveLength(160);
     expect(detail?.endsWith('…')).toBe(true);
   });
 
-  it('matches the runner generic notice text', () => {
-    const runner = fs.readFileSync(path.join(process.cwd(), 'container/agent-runner/src/poll-loop.ts'), 'utf-8');
-    expect(runner).toContain(`'${GENERIC_FAILURE_NOTICE}'`);
+  it('matches the runner constant', () => {
+    const runner = fs.readFileSync(path.join(process.cwd(), 'container/agent-runner/src/formatter.ts'), 'utf-8');
+    expect(runner.match(/export const GENERIC_FAILURE_NOTICE = '([^']+)'/)?.[1]).toBe(GENERIC_FAILURE_NOTICE);
   });
 
   it('is attached to the outcome of a failed ping', async () => {
     const result = pingCliAgent(1000);
     const child = children[children.length - 1];
-    child.stdout.emit('data', Buffer.from('Credit balance is too low\n'));
+    child.stderr.emit('data', Buffer.from('Credit balance is too low\n'));
     child.emit('close', 4);
     await expect(result).resolves.toEqual({ result: 'agent_failure', detail: 'Credit balance is too low' });
   });

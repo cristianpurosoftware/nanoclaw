@@ -24,6 +24,9 @@ export function isSessionEcho(msg: MessageInRow): boolean {
  */
 export const FAILURE_NOTICE_FIELD = 'failureNotice';
 
+/** Notice text when the provider gave no error of its own. */
+export const GENERIC_FAILURE_NOTICE = 'The agent run failed. Check the logs for details.';
+
 export function isFailureNotice(msg: MessageInRow): boolean {
   try {
     return JSON.parse(msg.content)?.[FAILURE_NOTICE_FIELD] === true;

@@ -9,6 +9,7 @@
  *
  * Exit codes: 0 reply, 2 socket unreachable, 3 no reply,
  * 4 a reply was the runner's failure notice (the agent run failed).
+ * Failure notices go to stderr, so stdout holds only real replies.
  *
  * Preconditions: NanoClaw host service running, an agent group wired to
  * `cli/local` via `/init-first-agent` or `/manage-channels`.
@@ -83,9 +84,10 @@ function main(): void {
       try {
         const msg = JSON.parse(line);
         if (typeof msg.text === 'string') {
-          process.stdout.write(msg.text + '\n');
+          const isNotice = msg[FAILURE_NOTICE_FIELD] === true;
+          (isNotice ? process.stderr : process.stdout).write(msg.text + '\n');
           firstReplySeen = true;
-          if (msg[FAILURE_NOTICE_FIELD] === true) failureNoticeSeen = true;
+          if (isNotice) failureNoticeSeen = true;
           if (hardTimer) {
             clearTimeout(hardTimer);
             hardTimer = null;
