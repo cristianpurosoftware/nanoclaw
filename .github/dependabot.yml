@@ -14,7 +14,7 @@ updates:
       interval: weekly
       day: monday
       time: "06:00"
-      timezone: Asia/Jerusalem
+      timezone: Europe/Madrid # Barcelona
     cooldown:
       default-days: 7
     groups:
