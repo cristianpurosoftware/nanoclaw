@@ -216,6 +216,23 @@ describe('routing (extractRouting)', () => {
     expect(routing.agentOnly).toBe(false);
   });
 
+  it('agentOnly ignores user context rows that did not wake the turn', () => {
+    insertMessage(
+      'c1',
+      'chat',
+      { sender: 'Alice', text: 'ambient chat' },
+      { seq: 2, trigger: 0, platformId: 'C123', channelType: 'slack' },
+    );
+    insertMessage(
+      'a1',
+      'chat',
+      { sender: 'caller', text: 'Status?' },
+      { seq: 4, platformId: 'ag-1', channelType: 'agent' },
+    );
+
+    expect(extractRouting(getPendingMessages()).agentOnly).toBe(true);
+  });
+
   it('agentOnly is false for an echo-only batch', () => {
     insertEcho('e1', { seq: 2 });
 
