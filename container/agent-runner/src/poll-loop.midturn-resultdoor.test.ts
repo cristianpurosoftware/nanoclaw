@@ -921,7 +921,9 @@ describe('<message> blocks to another agent', () => {
       await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
 
       expect(deliveredTexts()).toEqual(['On it.']);
-      expect(nudges(pushes)).toHaveLength(1);
+      // Informed, so the retry knows "On it." already went out.
+      expect(informedNudges(pushes)).toHaveLength(1);
+      expect(informedNudges(pushes)[0]).toContain('>On it.</sent_message>');
     },
   );
 

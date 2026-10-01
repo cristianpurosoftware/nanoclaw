@@ -615,9 +615,6 @@ export async function processQuery(
         const resultText = event.text ?? '';
         const failed = event.isError === true;
         if (resultText || failed) {
-          // Tool sends this turn that may be the reply. Read before the
-          // result door writes, so only earlier sends are quoted below.
-          const toolSends = chatRowsWrittenSince(turnStartSeq, routing.agentOnly === true);
           const { hasUnwrapped, taskBlocks, undelivered } = await dispatchResultText(resultText, routing, {
             midTurnSent,
             midTurnReplied,
@@ -659,13 +656,15 @@ export async function processQuery(
           });
           if (willRetryWrapping) {
             unwrappedNudged = true;
+            // Everything that went out this turn, tool and door sends alike.
+            const sentThisTurn = chatRowsWrittenSince(turnStartSeq, routing.agentOnly === true);
             const destinations = getAllDestinations();
             const names = destinations.map((d) => d.name).join(', ');
             // A tool send can't be told apart from an "on it" ack, so after
             // one the model sees what went out and decides; never a silent drop.
             pushRetry(
-              toolSends.length > 0
-                ? buildInformedWrapNudge(toolSends, undelivered, destinations)
+              sentThisTurn.length > 0
+                ? buildInformedWrapNudge(sentThisTurn, undelivered, destinations)
                 : `<system>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
                     `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
                     `Your destinations: ${names}. ` +
