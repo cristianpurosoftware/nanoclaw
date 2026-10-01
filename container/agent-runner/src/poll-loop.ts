@@ -1174,8 +1174,10 @@ export async function dispatchResultText(
     if (!dest) {
       log(`Unknown destination in <message to="${toName}">, dropping block`);
       scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
-      // Lost unless it already went out this turn (its destination removed since).
-      if (options?.turnStartSeq !== undefined && !textWrittenSince(body, options.turnStartSeq)) missed++;
+      // Lost, unless the stream already sent it and its destination was removed since.
+      const streamedEarlier =
+        options?.suppressDelivery && options.turnStartSeq !== undefined && textWrittenSince(body, options.turnStartSeq);
+      if (!streamedEarlier) missed++;
       continue;
     }
     // Never deliver a blank message: a body that is empty (or was only

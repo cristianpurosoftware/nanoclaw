@@ -835,6 +835,20 @@ describe('<message> blocks to another agent', () => {
     },
   );
 
+  it('end-of-turn: a block to an unknown destination is nudged even if its text went elsewhere', async () => {
+    seedDest();
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 's1' };
+      yield { type: 'result', text: '<message to="discord-main">42</message><message to="missing">42</message>' };
+    }
+    const { query, pushes } = makeStubQuery(events());
+
+    await processQuery(query, CHAT_ROUTING, ['m1'], 'result-provider', undefined, 'prompt', undefined, false);
+
+    expect(deliveredTexts()).toEqual(['42']);
+    expect(nudges(pushes)).toHaveLength(1);
+  });
+
   it('a streamed delegation does not hide an answer block that never streamed', async () => {
     seedDest();
     seedAgentDest('worker', 'ag-worker');
