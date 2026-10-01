@@ -892,6 +892,23 @@ describe('<message> blocks to another agent', () => {
     },
   );
 
+  it('a streamed delegation does not hide an answer block that never streamed', async () => {
+    seedDest();
+    seedAgentDest('worker', 'ag-worker');
+    const delegation = '<message to="worker">Check this.</message>';
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 's1' };
+      yield { type: 'text', text: delegation };
+      yield { type: 'result', text: '<message to="discord-main">The answer is 4.</message>' };
+    }
+    const { query, pushes } = makeStubQuery(events());
+
+    await processQuery(query, CHAT_ROUTING, ['m1'], 'mid-turn-provider', undefined, 'prompt', undefined, true);
+
+    expect(deliveredTexts()).toEqual(['Check this.']);
+    expect(nudges(pushes)).toHaveLength(1);
+  });
+
   it.each(PROVIDER_MODES)(
     'on an agent-only batch a block back to the caller is the reply (%s)',
     async (provider, midTurn) => {

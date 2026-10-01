@@ -621,6 +621,7 @@ export async function processQuery(
           const { hasUnwrapped, taskBlocks, undelivered } = await dispatchResultText(resultText, routing, {
             midTurnSent,
             midTurnReplied,
+            turnStartSeq,
             // For mid-turn delivery providers the result door NEVER delivers
             // content: mid-turn streaming is the single content door. The
             // result door's remaining job is the nudge decision.
@@ -832,6 +833,12 @@ export interface ResultDispatchOptions {
   midTurnSent?: number;
   /** The midTurnSent blocks that answer the batch (see answersBatch). Defaults to midTurnSent. */
   midTurnReplied?: number;
+  /**
+   * Outbound seq at the turn boundary. With `suppressDelivery`, a result block
+   * is a repeat only if this exact message was written since then; without
+   * it, any mid-turn delivery marks every result block as a repeat.
+   */
+  turnStartSeq?: number;
   /**
    * Providers declaring `textDelivery: 'mid-turn-complete'`: the result door NEVER delivers
    * content. Mid-turn streaming (parse-time block delivery plus cross-
@@ -1191,12 +1198,15 @@ export async function dispatchResultText(
     // undelivered and fires the wrap-nudge: the model re-sends and the retry
     // streams through the mid-turn door.
     if (options?.suppressDelivery) {
-      if (sent > 0) {
+      // Exact match, so a streamed delegation can't hide an unstreamed answer.
+      const repeat =
+        options.turnStartSeq === undefined
+          ? sent > 0
+          : wasWrittenInSeqWindow(dest, body, options.turnStartSeq, maxOutboundSeq());
+      if (repeat) {
         log(`<message to="${toName}"> in final result after a same-turn delivery — repeat, result door does not send`);
       } else {
-        log(
-          `<message to="${toName}"> in final result but nothing was delivered this turn — nudging for a mid-turn resend`,
-        );
+        log(`<message to="${toName}"> in final result was not delivered this turn — nudging for a mid-turn resend`);
         scratchpadParts.push(`[not delivered — the result door does not send; to="${toName}"] ${body}`);
       }
       continue;
