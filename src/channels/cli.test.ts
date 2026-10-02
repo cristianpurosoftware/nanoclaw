@@ -124,10 +124,13 @@ async function deliverToChat(content: Record<string, unknown>): Promise<Record<s
 describe('cli channel: chat delivery', () => {
   it('forwards the failureNotice flag on a runner failure notice', async () => {
     const line = await deliverToChat({
-      text: 'The agent run failed. Check the logs for details.',
+      text: "Sorry, something went wrong and I couldn't answer. Whoever runs this NanoClaw can look into it using the logs: https://docs.nanoclaw.dev/operate/troubleshooting#start-here",
       failureNotice: true,
     });
-    expect(line).toEqual({ text: 'The agent run failed. Check the logs for details.', failureNotice: true });
+    expect(line).toEqual({
+      text: "Sorry, something went wrong and I couldn't answer. Whoever runs this NanoClaw can look into it using the logs: https://docs.nanoclaw.dev/operate/troubleshooting#start-here",
+      failureNotice: true,
+    });
   });
 
   it('sends a normal reply without the flag', async () => {

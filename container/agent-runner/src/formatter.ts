@@ -25,7 +25,8 @@ export function isSessionEcho(msg: MessageInRow): boolean {
 export const FAILURE_NOTICE_FIELD = 'failureNotice';
 
 /** Notice text when the provider gave no error of its own. */
-export const GENERIC_FAILURE_NOTICE = 'The agent run failed. Check the logs for details.';
+export const GENERIC_FAILURE_NOTICE =
+  "Sorry, something went wrong and I couldn't answer. Whoever runs this NanoClaw can look into it using the logs: https://docs.nanoclaw.dev/operate/troubleshooting#start-here";
 
 export function isFailureNotice(msg: MessageInRow): boolean {
   try {

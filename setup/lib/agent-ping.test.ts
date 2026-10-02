@@ -75,7 +75,7 @@ describe('classifyPingResult', () => {
   });
 
   it('treats a failure notice (chat exit 4) as an agent failure, not ok', () => {
-    expect(classifyPingResult(4, 'The agent run failed. Check the logs for details.\n')).toBe('agent_failure');
+    expect(classifyPingResult(4, `${GENERIC_FAILURE_NOTICE}\n`)).toBe('agent_failure');
   });
 
   it('keeps auth_error for a failure notice that names an auth problem', () => {
@@ -114,7 +114,7 @@ describe('pingCliAgent timeout', () => {
     vi.useFakeTimers();
     const result = pingCliAgent(1000);
     const child = children[0];
-    child.stdout.emit('data', raw('The agent run failed. Check the logs for details.', true));
+    child.stdout.emit('data', raw(GENERIC_FAILURE_NOTICE, true));
     await vi.advanceTimersByTimeAsync(1000);
     expect(child.kill).not.toHaveBeenCalled();
     child.emit('close', 4);
@@ -199,7 +199,7 @@ describe('ping outcome from raw ncl lines', () => {
 
   it('matches the runner constant', () => {
     const runner = fs.readFileSync(path.join(process.cwd(), 'container/agent-runner/src/formatter.ts'), 'utf-8');
-    expect(runner.match(/export const GENERIC_FAILURE_NOTICE = '([^']+)'/)?.[1]).toBe(GENERIC_FAILURE_NOTICE);
+    expect(runner.match(/export const GENERIC_FAILURE_NOTICE =\s*"([^"]+)"/)?.[1]).toBe(GENERIC_FAILURE_NOTICE);
   });
 
   it('runs ncl in raw-lines mode and attaches the reason', async () => {
@@ -216,16 +216,18 @@ describe('wizard failure copy', () => {
   // The note is wrapped to the terminal width; compare it as one line.
   const flat = (text: string) => text.replace(/\s+/g, ' ');
 
-  it("shows the agent's own error and no log pointer", () => {
+  it("shows the agent's own error plus the logs and docs", () => {
     const copy = pingFailureCopy({ result: 'agent_failure', detail: 'Credit balance is too low' });
     expect(flat(copy.note)).toContain('It said: "Credit balance is too low".');
     expect(copy.assistHint).toContain('Credit balance is too low');
-    expect(flat(copy.note)).not.toContain('logs/nanoclaw.log');
+    expect(flat(copy.note)).toContain('`logs/nanoclaw.log` and `logs/nanoclaw.error.log`');
+    expect(flat(copy.note)).toContain('https://docs.nanoclaw.dev/operate/troubleshooting#start-here');
   });
 
   it('says no reason was sent for the generic notice', () => {
     const copy = pingFailureCopy({ result: 'agent_failure' });
     expect(flat(copy.note)).toContain('It sent no reason.');
-    expect(flat(copy.note)).not.toContain('logs/nanoclaw.log');
+    expect(flat(copy.note)).toContain('`logs/nanoclaw.log` and `logs/nanoclaw.error.log`');
+    expect(flat(copy.note)).toContain('https://docs.nanoclaw.dev/operate/troubleshooting#start-here');
   });
 });

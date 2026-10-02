@@ -32,8 +32,11 @@ export interface PingOutcome {
 
 // The runner's notice when it has no error of its own to report; it tells the
 // user nothing, so it is not shown. agent-ping.test.ts pins it to the runner.
-export const GENERIC_FAILURE_NOTICE = 'The agent run failed. Check the logs for details.';
+export const GENERIC_FAILURE_NOTICE =
+  "Sorry, something went wrong and I couldn't answer. Whoever runs this NanoClaw can look into it using the logs: https://docs.nanoclaw.dev/operate/troubleshooting#start-here";
 const DETAIL_MAX_CHARS = 160;
+const TROUBLESHOOTING_URL = 'https://docs.nanoclaw.dev/operate/troubleshooting#start-here';
+const LOG_FILES = '`logs/nanoclaw.log` and `logs/nanoclaw.error.log`';
 
 const PING_HINTS: Record<Exclude<PingResult, 'ok'>, string> = {
   no_reply: 'no reply in time; check logs/nanoclaw.log',
@@ -205,19 +208,19 @@ export function pingFailureCopy({ result, detail }: PingOutcome): PingFailureCop
     return {
       spinner: 'Your assistant started, but its run failed.',
       note: wrapForGutter(
-        `Your assistant's run failed. ${reason} Wrong or expired model credentials are a common cause: check them, then try \`pnpm run chat hi\`.`,
+        `Your assistant's run failed. ${reason} Wrong or expired model credentials are a common cause. To dig in, check ${LOG_FILES} (${TROUBLESHOOTING_URL}), then try \`pnpm run chat hi\`.`,
         6,
       ),
       assistMsg: 'The assistant replied with a failure notice instead of an answer.',
       assistHint: detail
-        ? `The agent's error: ${detail}`
-        : 'The agent run failed without a reason; wrong or expired model credentials are a common cause.',
+        ? `The agent's error: ${detail}. Logs: logs/nanoclaw.log, logs/nanoclaw.error.log.`
+        : 'The agent run failed without a reason. Check logs/nanoclaw.log and logs/nanoclaw.error.log; wrong or expired model credentials are a common cause.',
     };
   }
   return {
     spinner: "Your assistant didn't reply in time.",
     note: wrapForGutter(
-      'No reply from your assistant within 30 seconds. Check `logs/nanoclaw.log` for clues, then try `pnpm run chat hi`.',
+      `No reply from your assistant within 30 seconds. Check ${LOG_FILES} for clues (${TROUBLESHOOTING_URL}), then try \`pnpm run chat hi\`.`,
       6,
     ),
     assistMsg: 'No reply from the assistant within 30 seconds.',
