@@ -19,9 +19,6 @@ import { wrapForGutter } from './theme.js';
 
 export const PING_AGENT_FOLDER = 'ping_test';
 
-// Longer than chat.ts's SILENCE_MS (2s), so a finished reply gets to exit.
-const PING_EXIT_GRACE_MS = 3_000;
-
 export type PingResult = 'ok' | 'no_reply' | 'socket_error' | 'auth_error' | 'agent_failure';
 
 export interface PingOutcome {
@@ -31,7 +28,7 @@ export interface PingOutcome {
 }
 
 // The runner's notice when it has no error of its own to report; it tells the
-// user nothing, so it is not shown. agent-ping.test.ts pins it to the runner.
+// user nothing, so it is not shown. src/channels/cli.test.ts pins it to the runner.
 export const GENERIC_FAILURE_NOTICE =
   "Sorry, something went wrong and I couldn't answer. Whoever runs this NanoClaw can look into it using the logs: https://docs.nanoclaw.dev/operate/troubleshooting#start-here";
 const DETAIL_MAX_CHARS = 160;
@@ -115,15 +112,11 @@ function parseReplies(stdout: string): PingReply[] {
 /** Classify ncl's raw-lines output and pick the reason to show, if any. */
 export function pingOutcome(exitCode: number | null, stdout: string, stderr: string): PingOutcome {
   const replies = parseReplies(stdout);
-  const notices = replies.filter((r) => r.failureNotice);
-  // A flagged notice is the failure, even if the wrapper had to kill ncl, and
-  // only notices (not a partial reply before them) are checked for auth errors.
-  const code = exitCode ?? (notices.length > 0 ? 4 : null);
-  const text = (notices.length > 0 ? notices : replies).map((r) => r.text).join('\n');
-  const result = classifyPingResult(code, text, stderr);
+  const text = replies.map((r) => r.text).join('\n');
+  const result = classifyPingResult(exitCode, text, stderr);
   let detail: string | undefined;
   if (result === 'agent_failure') {
-    detail = sanitizeDetail(notices[0]?.text ?? '');
+    detail = sanitizeDetail(replies.find((r) => r.failureNotice)?.text ?? '');
   } else if (result === 'auth_error') {
     const hit = `${text}\n${stderr}`.split('\n').find((l) => AUTH_ERROR_PATTERNS.some((re) => re.test(l)));
     detail = sanitizeDetail(hit ?? '');
@@ -141,21 +134,12 @@ export function pingCliAgent(timeoutMs = 30_000): Promise<PingOutcome> {
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let graceUsed = false;
-    // A reply already printed means chat.ts is in its 2s silence wait; let it
-    // exit so its code (0 vs 4) still decides the result.
-    const onTimeout = () => {
+    const timer = setTimeout(() => {
       if (settled) return;
-      if (!graceUsed && stdout.trim().length > 0) {
-        graceUsed = true;
-        timer = setTimeout(onTimeout, PING_EXIT_GRACE_MS);
-        return;
-      }
       settled = true;
       child.kill('SIGKILL');
-      resolve(pingOutcome(null, stdout, stderr));
-    };
-    let timer = setTimeout(onTimeout, timeoutMs);
+      resolve({ result: 'no_reply' });
+    }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf-8');

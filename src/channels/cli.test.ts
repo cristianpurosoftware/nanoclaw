@@ -138,11 +138,16 @@ describe('cli channel: chat delivery', () => {
   });
 });
 
-describe('cli channel: failure flag name', () => {
-  it('matches the runner constant and the ncl client copy', () => {
-    for (const file of ['container/agent-runner/src/formatter.ts', 'scripts/chat.ts']) {
-      const src = fs.readFileSync(path.join(process.cwd(), file), 'utf-8');
-      expect(src.match(/const FAILURE_NOTICE_FIELD = '([^']+)'/)?.[1], file).toBe(FAILURE_NOTICE_FIELD);
-    }
+// The runner can't share host modules, so its notice constants have copies here,
+// in ncl and in setup; one test keeps them in sync.
+describe('runner notice constants', () => {
+  it('match their host copies', () => {
+    const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), 'utf-8');
+    const runner = read('container/agent-runner/src/formatter.ts');
+    expect(runner.match(/const FAILURE_NOTICE_FIELD = '([^']+)'/)?.[1]).toBe(FAILURE_NOTICE_FIELD);
+    expect(read('scripts/chat.ts').match(/const FAILURE_NOTICE_FIELD = '([^']+)'/)?.[1]).toBe(FAILURE_NOTICE_FIELD);
+    const notice = /const GENERIC_FAILURE_NOTICE =\s*"([^"]+)";/;
+    expect(runner.match(notice)?.[1]).toBeTruthy();
+    expect(read('setup/lib/agent-ping.ts').match(notice)?.[1]).toBe(runner.match(notice)?.[1]);
   });
 });

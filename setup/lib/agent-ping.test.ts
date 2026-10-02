@@ -1,6 +1,4 @@
 import { EventEmitter } from 'events';
-import fs from 'fs';
-import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isValidGroupFolder } from '../../src/group-folder.js';
@@ -110,41 +108,10 @@ describe('pingCliAgent timeout', () => {
     children.length = 0;
   });
 
-  it('lets a reply printed just before the deadline exit with its own code', async () => {
-    vi.useFakeTimers();
-    const result = pingCliAgent(1000);
-    const child = children[0];
-    child.stdout.emit('data', raw(GENERIC_FAILURE_NOTICE, true));
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(child.kill).not.toHaveBeenCalled();
-    child.emit('close', 4);
-    await expect(result).resolves.toEqual({ result: 'agent_failure' });
-  });
-
-  it("waits out ncl's 2s quiet period before giving up", async () => {
-    vi.useFakeTimers();
-    const result = pingCliAgent(1000);
-    const child = children[0];
-    child.stdout.emit('data', raw('Spending limit reached', true));
-    await vi.advanceTimersByTimeAsync(1000 + 2000);
-    expect(child.kill).not.toHaveBeenCalled();
-    child.emit('close', 4);
-    await expect(result).resolves.toEqual({ result: 'agent_failure', detail: 'Spending limit reached' });
-  });
-
   it('reports no_reply when nothing was printed by the deadline', async () => {
     vi.useFakeTimers();
     const result = pingCliAgent(1000);
     await vi.advanceTimersByTimeAsync(1000);
-    expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
-    await expect(result).resolves.toEqual({ result: 'no_reply' });
-  });
-
-  it('gives up after the grace period if the client never exits', async () => {
-    vi.useFakeTimers();
-    const result = pingCliAgent(1000);
-    children[0].stdout.emit('data', raw('pong'));
-    await vi.advanceTimersByTimeAsync(5000);
     expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
     await expect(result).resolves.toEqual({ result: 'no_reply' });
   });
@@ -157,18 +124,6 @@ describe('ping outcome from raw ncl lines', () => {
       result: 'agent_failure',
       detail: '403 billing_error: Spending limit reached.',
     });
-  });
-
-  it('keeps a received notice when ncl had to be killed', () => {
-    expect(pingOutcome(null, raw('Spending limit reached', true).toString(), '')).toEqual({
-      result: 'agent_failure',
-      detail: 'Spending limit reached',
-    });
-  });
-
-  it('does not take auth wording in a partial reply over the flagged notice', () => {
-    const stdout = raw('You are not logged in to GitHub').toString() + raw('Spending limit reached', true);
-    expect(pingOutcome(4, stdout, '')).toEqual({ result: 'agent_failure', detail: 'Spending limit reached' });
   });
 
   it('hides the generic notice, which carries no reason', () => {
@@ -195,11 +150,6 @@ describe('ping outcome from raw ncl lines', () => {
     const long = sanitizeDetail('word '.repeat(100));
     expect(long).toHaveLength(160);
     expect(long?.endsWith('…')).toBe(true);
-  });
-
-  it('matches the runner constant', () => {
-    const runner = fs.readFileSync(path.join(process.cwd(), 'container/agent-runner/src/formatter.ts'), 'utf-8');
-    expect(runner.match(/export const GENERIC_FAILURE_NOTICE =\s*"([^"]+)"/)?.[1]).toBe(GENERIC_FAILURE_NOTICE);
   });
 
   it('runs ncl in raw-lines mode and attaches the reason', async () => {
