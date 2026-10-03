@@ -117,7 +117,7 @@ describe('pingCliAgent timeout', () => {
   });
 });
 
-describe('ping outcome from raw ncl lines', () => {
+describe('ping outcome from raw chat-client lines', () => {
   it('uses the flagged notice, not a partial reply before it', () => {
     const stdout = raw('Finished the first step.').toString() + raw('403 billing_error: Spending limit reached.', true);
     expect(pingOutcome(4, stdout, '(node:1) Warning: something\n')).toEqual({
@@ -145,6 +145,13 @@ describe('ping outcome from raw ncl lines', () => {
     expect(pingOutcome(0, raw('pong').toString(), '')).toEqual({ result: 'ok' });
   });
 
+  it('turns tabs into spaces and never splits a character when truncating', () => {
+    expect(sanitizeDetail('a\tb')).toBe('a b');
+    const emoji = sanitizeDetail('🙂'.repeat(200));
+    expect(Array.from(emoji ?? '')).toHaveLength(160);
+    expect(emoji).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
   it('strips terminal escapes and keeps one short line', () => {
     expect(sanitizeDetail('\x1b]52;c;VEVTVA==\x07\x1b[31mInvalid API key\x1b[0m\nsecond line')).toBe('Invalid API key');
     const long = sanitizeDetail('word '.repeat(100));
@@ -152,7 +159,7 @@ describe('ping outcome from raw ncl lines', () => {
     expect(long?.endsWith('…')).toBe(true);
   });
 
-  it('runs ncl in raw-lines mode and attaches the reason', async () => {
+  it('runs the chat client in raw-lines mode and attaches the reason', async () => {
     const result = pingCliAgent(1000);
     const child = children[children.length - 1];
     child.stdout.emit('data', raw('Credit balance is too low', true));

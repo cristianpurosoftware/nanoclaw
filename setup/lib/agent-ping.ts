@@ -80,10 +80,11 @@ const TERMINAL_ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b
 export function sanitizeDetail(text: string): string | undefined {
   const line = text
     .split('\n')
-    .map((l) => l.replace(TERMINAL_ESCAPES, '').trim())
+    .map((l) => l.replace(/\t/g, ' ').replace(TERMINAL_ESCAPES, '').trim())
     .find((l) => l.length > 0);
   if (!line || line === GENERIC_FAILURE_NOTICE) return undefined;
-  return line.length > DETAIL_MAX_CHARS ? `${line.slice(0, DETAIL_MAX_CHARS - 1)}…` : line;
+  const chars = Array.from(line);
+  return chars.length > DETAIL_MAX_CHARS ? `${chars.slice(0, DETAIL_MAX_CHARS - 1).join('')}…` : line;
 }
 
 interface PingReply {
@@ -91,7 +92,7 @@ interface PingReply {
   failureNotice: boolean;
 }
 
-// ncl runs in raw-lines mode for the ping: one socket JSON line per stdout line.
+// The chat client runs in raw-lines mode for the ping: one socket JSON line per stdout line.
 function parseReplies(stdout: string): PingReply[] {
   const replies: PingReply[] = [];
   for (const line of stdout.split('\n')) {
@@ -109,7 +110,7 @@ function parseReplies(stdout: string): PingReply[] {
   return replies;
 }
 
-/** Classify ncl's raw-lines output and pick the reason to show, if any. */
+/** Classify the chat client's raw-lines output and pick the reason to show, if any. */
 export function pingOutcome(exitCode: number | null, stdout: string, stderr: string): PingOutcome {
   const replies = parseReplies(stdout);
   const text = replies.map((r) => r.text).join('\n');
@@ -192,7 +193,7 @@ export function pingFailureCopy({ result, detail }: PingOutcome): PingFailureCop
     return {
       spinner: 'Your assistant started, but its run failed.',
       note: wrapForGutter(
-        `Your assistant's run failed. ${reason} Wrong or expired model credentials are a common cause. To dig in, check ${LOG_FILES} (${TROUBLESHOOTING_URL}), then try \`pnpm run chat hi\`.`,
+        `Your assistant's run failed. ${reason} Wrong or expired model credentials are a common cause. To dig in, check ${LOG_FILES}, then try \`pnpm run chat hi\`. Guide: ${TROUBLESHOOTING_URL}`,
         6,
       ),
       assistMsg: 'The assistant replied with a failure notice instead of an answer.',
@@ -204,7 +205,7 @@ export function pingFailureCopy({ result, detail }: PingOutcome): PingFailureCop
   return {
     spinner: "Your assistant didn't reply in time.",
     note: wrapForGutter(
-      `No reply from your assistant within 30 seconds. Check ${LOG_FILES} for clues (${TROUBLESHOOTING_URL}), then try \`pnpm run chat hi\`.`,
+      `No reply from your assistant within 30 seconds. Check ${LOG_FILES} for clues, then try \`pnpm run chat hi\`. Guide: ${TROUBLESHOOTING_URL}`,
       6,
     ),
     assistMsg: 'No reply from the assistant within 30 seconds.',

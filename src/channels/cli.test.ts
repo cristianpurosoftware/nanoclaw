@@ -139,7 +139,7 @@ describe('cli channel: chat delivery', () => {
 });
 
 // The runner can't share host modules, so its notice constants have copies here,
-// in ncl and in setup; one test keeps them in sync.
+// in the chat client and in setup; one test keeps them in sync.
 describe('runner notice constants', () => {
   it('match their host copies', () => {
     const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), 'utf-8');
