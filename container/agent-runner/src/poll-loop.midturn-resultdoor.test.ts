@@ -427,21 +427,22 @@ describe('destination set changes between stream time and result time', () => {
     expect(nudges(pushes)[0]).toContain('to the late channel');
   });
 
-  it('dest removed between stream and result: the delivered block is not re-sent and no nudge fires', async () => {
+  it('dest removed between stream and result: the delivered block is not re-sent; the nudge quotes it', async () => {
     seedDest();
     const block = '<message to="discord-main">delivered before removal</message>';
     async function* events(): AsyncGenerator<ProviderEvent> {
       yield { type: 'init', continuation: 's1' };
       yield { type: 'text', text: block }; // delivers
       removeDest('discord-main');
-      yield { type: 'result', text: block }; // result-door: unknown dest → dropped-note; turn delivered → no nudge
+      yield { type: 'result', text: block }; // unknown dest now → dropped-note → informed nudge
     }
     const { query, pushes } = makeStubQuery(events());
 
     await processQuery(query, CHAT_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined, true);
 
     expect(deliveredTexts()).toEqual(['delivered before removal']);
-    expect(nudges(pushes)).toHaveLength(0);
+    expect(informedNudges(pushes)).toHaveLength(1);
+    expect(informedNudges(pushes)[0]).toContain('>delivered before removal</sent_message>');
   });
 });
 
@@ -834,6 +835,22 @@ describe('<message> blocks to another agent', () => {
       expect(informedNudges(pushes)[0]).toContain('>On it.</sent_message>');
     },
   );
+
+  it('streaming: a block to an unknown destination is nudged even if its text went elsewhere', async () => {
+    seedDest();
+    const known = '<message to="discord-main">42</message>';
+    async function* events(): AsyncGenerator<ProviderEvent> {
+      yield { type: 'init', continuation: 's1' };
+      yield { type: 'text', text: known };
+      yield { type: 'result', text: `${known}<message to="missing">42</message>` };
+    }
+    const { query, pushes } = makeStubQuery(events());
+
+    await processQuery(query, CHAT_ROUTING, ['m1'], 'mid-turn-provider', undefined, 'prompt', undefined, true);
+
+    expect(deliveredTexts()).toEqual(['42']);
+    expect(nudges(pushes)).toHaveLength(1);
+  });
 
   it('end-of-turn: a block to an unknown destination is nudged even if its text went elsewhere', async () => {
     seedDest();

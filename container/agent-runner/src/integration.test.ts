@@ -178,7 +178,9 @@ describe('poll loop integration', () => {
     // Only the valid destination gets output. The dropped block is nudged, and
     // this mock answers the retry identically, so 'delivered' may repeat.
     const out = getUndeliveredMessages();
+    // First pass plus at most one nudged retry.
     expect(out.length).toBeGreaterThan(0);
+    expect(out.length).toBeLessThanOrEqual(2);
     for (const row of out) {
       expect(JSON.parse(row.content).text).toBe('delivered');
       expect(row.platform_id).toBe('chan-1');

@@ -1094,12 +1094,6 @@ function isReactionRow(content: string): boolean {
   }
 }
 
-/** Was a chat row with exactly this text written after `afterSeq`, to any destination? */
-function textWrittenSince(body: string, afterSeq: number): boolean {
-  const content = JSON.stringify({ text: body });
-  return chatRowsInWindow(afterSeq).some((message) => message.content === content);
-}
-
 /**
  * Does messages_out already hold a chat row with this exact destination and
  * body, written in the seq window (afterSeq, uptoSeq]? Used by the mid-turn
@@ -1174,10 +1168,9 @@ export async function dispatchResultText(
     if (!dest) {
       log(`Unknown destination in <message to="${toName}">, dropping block`);
       scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
-      // Lost, unless the stream already sent it and its destination was removed since.
-      const streamedEarlier =
-        options?.suppressDelivery && options.turnStartSeq !== undefined && textWrittenSince(body, options.turnStartSeq);
-      if (!streamedEarlier) missed++;
+      // Possibly lost: always nudge. If it already went out before its destination
+      // was removed, the informed nudge quotes that send and the model answers done.
+      missed++;
       continue;
     }
     // Never deliver a blank message: a body that is empty (or was only
@@ -1228,7 +1221,11 @@ export async function dispatchResultText(
   // log) — never treat it as an undelivered reply or nudge the agent to wrap it.
   const hasUnwrapped = !routing.taskRun && (missed > 0 || (replied === 0 && !!scratchpad));
   if (hasUnwrapped) {
-    log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
+    log(
+      replied > 0
+        ? `WARNING: a <message to="..."> block in the final text was not delivered`
+        : `WARNING: agent output had no <message to="..."> blocks — nothing was sent`,
+    );
   }
   return { sent, hasUnwrapped, taskBlocks, undelivered: scratchpad };
 }
