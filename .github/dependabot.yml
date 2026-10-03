@@ -41,7 +41,8 @@ updates:
         update-types: [minor, patch]
     ignore:
       # Must match the root `chat` package (skill-directives lint), so Chat SDK
-      # upgrades move them. Ignore rules do not apply to security updates.
+      # upgrades move them. This also stops security-update PRs for them;
+      # their advisories still show as Dependabot alerts.
       - dependency-name: "@chat-adapter/*"
     commit-message:
       prefix: chore
