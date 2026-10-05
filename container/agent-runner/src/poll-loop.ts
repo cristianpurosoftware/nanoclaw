@@ -429,20 +429,26 @@ export async function processQuery(
     routing: RoutingContext;
     unwrappedNudged: boolean;
     taskBlockNudged: boolean;
+    nudgedWindow?: SeqWindow;
   };
   const queuedTurns: QueuedTurn[] = [];
+  // On a wrap-nudge retry: the rows the nudged turn wrote. The turn boundary
+  // moved past them, so both doors check retry blocks against this window and
+  // skip exact repeats. Follow-ups queued in between keep their own window.
+  let nudgedWindow: SeqWindow | undefined;
   const adoptTurn = (next: QueuedTurn): void => {
     Object.assign(routing, next.routing);
     unwrappedNudged = next.unwrappedNudged;
     taskBlockNudged = next.taskBlockNudged;
+    nudgedWindow = next.nudgedWindow;
     publishReplyRoute(routing);
     answering = true;
   };
   // A retry is another provider input, behind any follow-ups already pushed.
   // Preserve its original route, prompt and retry guards until it is answered.
-  const pushRetry = (prompt: string): void => {
+  const pushRetry = (prompt: string, retryOf?: SeqWindow): void => {
     query.push(prompt);
-    queuedTurns.push({ routing: { ...routing }, unwrappedNudged, taskBlockNudged });
+    queuedTurns.push({ routing: { ...routing }, unwrappedNudged, taskBlockNudged, nudgedWindow: retryOf });
     archivePrompts.push(archivePrompts[0] ?? initialPrompt);
   };
 
@@ -597,7 +603,7 @@ export async function processQuery(
         // delivery the result stays the only delivery door, so a stray text
         // event must not open a second one.
         if (midTurnCompleteDelivery) {
-          const scan = await deliverMidTurnBlocks(event.text, routing, turnStartSeq, midTurnTail);
+          const scan = await deliverMidTurnBlocks(event.text, routing, turnStartSeq, midTurnTail, nudgedWindow);
           midTurnSent += scan.delivered;
           midTurnReplied += scan.replied;
           midTurnTail = scan.tail;
@@ -617,6 +623,7 @@ export async function processQuery(
             midTurnSent,
             midTurnReplied,
             turnStartSeq,
+            nudgedWindow,
             // For mid-turn delivery providers the result door NEVER delivers
             // content: mid-turn streaming is the single content door. The
             // result door's remaining job is the nudge decision.
@@ -654,8 +661,9 @@ export async function processQuery(
           });
           if (willRetryWrapping) {
             unwrappedNudged = true;
-            // Everything that went out this turn, tool and door sends alike.
-            const sentThisTurn = chatRowsInWindow(turnStartSeq).filter((row) => !isReactionRow(row.content));
+            // Everything that went out this turn: tool sends, door sends and
+            // reactions alike, so a reaction-only turn can also answer done.
+            const sentThisTurn = chatRowsInWindow(turnStartSeq);
             const destinations = getAllDestinations();
             const names = destinations.map((d) => d.name).join(', ');
             // A tool send can't be told apart from an "on it" ack, so after
@@ -667,6 +675,7 @@ export async function processQuery(
                     `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
                     `Your destinations: ${names}. ` +
                     `Please re-send your response with the correct wrapping.</system>`,
+              { after: turnStartSeq, upto: maxOutboundSeq() },
             );
           }
           if (willRetryTaskBlocks) {
@@ -693,6 +702,7 @@ export async function processQuery(
         midTurnReplied = 0;
         turnStartSeq = maxOutboundSeq();
         midTurnTail = '';
+        nudgedWindow = undefined;
         const next = queuedTurns.shift();
         if (next) adoptTurn(next);
         else answering = false;
@@ -836,6 +846,8 @@ export interface ResultDispatchOptions {
    * it, any mid-turn delivery marks every result block as a repeat.
    */
   turnStartSeq?: number;
+  /** On a wrap-nudge retry: rows the nudged turn wrote. An exact repeat of one is not sent again. */
+  nudgedWindow?: SeqWindow;
   /**
    * Providers declaring `textDelivery: 'mid-turn-complete'`: the result door NEVER delivers
    * content. Mid-turn streaming (parse-time block delivery plus cross-
@@ -903,6 +915,7 @@ export async function deliverMidTurnBlocks(
   routing: RoutingContext,
   turnStartSeq?: number,
   carry = '',
+  nudgedWindow?: SeqWindow,
 ): Promise<MidTurnScanResult> {
   if (routing.taskRun) return { delivered: 0, replied: 0, tail: '' };
   const input = carry + text;
@@ -948,9 +961,13 @@ export async function deliverMidTurnBlocks(
       log(`Mid-turn <message to="${toName}"> is a verbatim repeat of a message already sent this turn — skipped`);
       continue;
     }
+    if (wasWrittenInWindow(dest, body, nudgedWindow)) {
+      log(`Mid-turn <message to="${toName}"> repeats a message the nudged turn already sent — skipped`);
+      continue;
+    }
     await sendToDestination(dest, body, routing);
     delivered++;
-    if (answersBatch(dest)) replied++;
+    if (answersBatch(dest, routing)) replied++;
     log(`Mid-turn delivery: <message to="${toName}"> (${body.length} chars)`);
   }
   return { delivered, replied, tail };
@@ -959,10 +976,12 @@ export async function deliverMidTurnBlocks(
 /**
  * Does a block sent to `dest` count as the reply? Not when it goes to another
  * agent: that may be delegation, so unwrapped text after it still gets the
- * nudge, which quotes the a2a send so a reply to a calling agent ends in done.
+ * nudge. The exception is a block back to the agent whose message woke this
+ * turn: that is the reply it is waiting for.
  */
-function answersBatch(dest: DestinationEntry): boolean {
-  return dest.type !== 'agent';
+function answersBatch(dest: DestinationEntry, routing: RoutingContext): boolean {
+  if (dest.type !== 'agent') return true;
+  return routing.channelType === 'agent' && routing.platformId === dest.agentGroupId;
 }
 
 const OPEN_INTERNAL_RE = /<internal\b/i;
@@ -1027,6 +1046,8 @@ function maxOutboundSeq(): number {
  * door, tool and error sends alike. Every caller fails toward a nudge or a
  * delivery, so a lookup error returns none.
  */
+type SeqWindow = { after: number; upto: number };
+
 function chatRowsInWindow(afterSeq: number, uptoSeq = Infinity): MessageOutRow[] {
   try {
     // ponytail: reuse the existing semantic read; add a cursor operation only if history scans show up in profiles.
@@ -1061,14 +1082,22 @@ export function buildInformedWrapNudge(
         ? row.channel_type === 'agent' && row.platform_id === d.agentGroupId
         : row.channel_type === d.channelType && row.platform_id === d.platformId,
     )?.name ?? 'unknown';
-  const clip = (text: string): string =>
-    escapePromptXml(text.length > INFORMED_NUDGE_QUOTE_MAX ? `${text.slice(0, INFORMED_NUDGE_QUOTE_MAX)}…` : text);
+  const clip = (text: string): string => escapePromptXml(clipCodePoints(text, INFORMED_NUDGE_QUOTE_MAX));
   const sent = rows.slice(0, INFORMED_NUDGE_ROWS_MAX).map((row) => {
     let text = '';
     try {
-      const content = JSON.parse(row.content) as { text?: unknown; files?: unknown };
+      const content = JSON.parse(row.content) as {
+        text?: unknown;
+        files?: unknown;
+        operation?: unknown;
+        emoji?: unknown;
+      };
       const files = Array.isArray(content.files) ? `[file: ${content.files.join(', ')}]` : '';
-      text = [typeof content.text === 'string' ? content.text : '', files].filter(Boolean).join(' ');
+      // A reaction is quoted as one, so the model can tell it from a reply.
+      text =
+        content.operation === 'reaction'
+          ? `[reaction: ${typeof content.emoji === 'string' ? content.emoji : '?'}]`
+          : [typeof content.text === 'string' ? content.text : '', files].filter(Boolean).join(' ');
     } catch {
       // Unparseable row: quote a placeholder.
     }
@@ -1085,13 +1114,16 @@ export function buildInformedWrapNudge(
   );
 }
 
-/** A reaction is a chat row too, but never a reply, so it is never quoted as one. */
-function isReactionRow(content: string): boolean {
-  try {
-    return (JSON.parse(content) as { operation?: unknown }).operation === 'reaction';
-  } catch {
-    return false;
+/** First `max` code points of `text`, with an ellipsis when cut. Never splits a surrogate pair. */
+function clipCodePoints(text: string, max: number): string {
+  let end = 0;
+  let count = 0;
+  for (const char of text) {
+    if (count === max) return `${text.slice(0, end)}…`;
+    end += char.length;
+    count++;
   }
+  return text;
 }
 
 /**
@@ -1102,6 +1134,25 @@ function isReactionRow(content: string): boolean {
  * a true door-written duplicate always matches; a body differing by even one
  * character is a different message and delivers.
  */
+/**
+ * Did the nudged turn already send this body to this destination? Compares
+ * trimmed text, since a tool send keeps the whitespace a block loses.
+ */
+function wasWrittenInWindow(dest: DestinationEntry, body: string, window: SeqWindow | undefined): boolean {
+  if (!window) return false;
+  const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
+  const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+  return chatRowsInWindow(window.after, window.upto).some((message) => {
+    if (message.platform_id !== platformId || message.channel_type !== channelType) return false;
+    try {
+      const content = JSON.parse(message.content) as { text?: unknown; operation?: unknown };
+      return content.operation === undefined && typeof content.text === 'string' && content.text.trim() === body;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function wasWrittenInSeqWindow(dest: DestinationEntry, body: string, afterSeq: number, uptoSeq: number): boolean {
   if (uptoSeq <= afterSeq) return false;
   const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
@@ -1191,9 +1242,10 @@ export async function dispatchResultText(
     if (options?.suppressDelivery) {
       // Exact match, so a streamed delegation can't hide an unstreamed answer.
       const repeat =
-        options.turnStartSeq === undefined
+        wasWrittenInWindow(dest, body, options.nudgedWindow) ||
+        (options.turnStartSeq === undefined
           ? sent > 0
-          : wasWrittenInSeqWindow(dest, body, options.turnStartSeq, maxOutboundSeq());
+          : wasWrittenInSeqWindow(dest, body, options.turnStartSeq, maxOutboundSeq()));
       if (repeat) {
         log(`<message to="${toName}"> in final result after a same-turn delivery — repeat, result door does not send`);
       } else {
@@ -1203,9 +1255,13 @@ export async function dispatchResultText(
       }
       continue;
     }
+    if (wasWrittenInWindow(dest, body, options?.nudgedWindow)) {
+      log(`<message to="${toName}"> repeats a message the nudged turn already sent — not sent again`);
+      continue;
+    }
     await sendToDestination(dest, body, routing);
     sent++;
-    if (answersBatch(dest)) replied++;
+    if (answersBatch(dest, routing)) replied++;
   }
   if (lastIndex < text.length) {
     scratchpadParts.push(text.slice(lastIndex));

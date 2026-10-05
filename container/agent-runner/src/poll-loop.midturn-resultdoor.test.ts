@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './mailbox/sqlite/connection.js';
-import { getUndeliveredMessages } from './db/messages-out.js';
+import { getUndeliveredMessages, writeMessageOut } from './db/messages-out.js';
 import { buildInformedWrapNudge, processQuery } from './poll-loop.js';
 import type { AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
 
@@ -70,6 +70,18 @@ function makeStubQuery(events: AsyncGenerator<ProviderEvent>): { query: AgentQue
       abort: () => {},
     },
   };
+}
+
+/** A send_message tool send: a chat row written outside both text doors. */
+function toolSend(id: string, text: string): void {
+  writeMessageOut({
+    id,
+    kind: 'chat',
+    platform_id: 'chan-1',
+    channel_type: 'discord',
+    thread_id: null,
+    content: JSON.stringify({ text }),
+  });
 }
 
 function deliveredTexts(): string[] {
@@ -635,7 +647,7 @@ describe('DB-visible sends gate the nudge', () => {
   );
 
   it.each(PROVIDER_MODES)(
-    'a reaction alone does not count as a reply: the unwrapped answer is still nudged (%s)',
+    'a reaction alone does not count as a reply: the nudge quotes it and offers done (%s)',
     async (provider, midTurn) => {
       seedDest();
       async function* events(): AsyncGenerator<ProviderEvent> {
@@ -649,14 +661,126 @@ describe('DB-visible sends gate the nudge', () => {
           thread_id: null,
           content: JSON.stringify({ operation: 'reaction', messageId: 'p-1', emoji: 'eyes' }),
         });
-        yield { type: 'result', text: 'The answer is 4.' };
+        yield { type: 'result', text: 'Reacted as asked.' };
+        yield { type: 'result', text: '<internal>done</internal>' };
       }
       const { query, pushes } = makeStubQuery(events());
 
       await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
 
       expect(nudges(pushes)).toHaveLength(1);
-      expect(informedNudges(pushes)).toHaveLength(0);
+      expect(informedNudges(pushes)[0]).toContain('<sent_message to="discord-main">[reaction: eyes]</sent_message>');
+      expect(informedNudges(pushes)[0]).toContain('<internal>done</internal>');
+      expect(getUndeliveredMessages().filter((m) => m.kind === 'chat')).toHaveLength(1);
+    },
+  );
+
+  it.each(PROVIDER_MODES)(
+    'an ack by tool, a long bare answer, then a wrapped retry: the answer arrives once (%s)',
+    async (provider, midTurn) => {
+      seedDest();
+      const answer = 'Here is the full analysis. '.repeat(85);
+      const wrapped = `<message to="discord-main">${answer}</message>`;
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        toolSend('ack-1', 'On it, pulling the data…');
+        if (midTurn) yield { type: 'text', text: answer };
+        yield { type: 'result', text: answer };
+        if (midTurn) yield { type: 'text', text: wrapped };
+        yield { type: 'result', text: wrapped };
+      }
+      const { query, pushes } = makeStubQuery(events());
+
+      await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['On it, pulling the data…', answer.trim()]);
+      expect(informedNudges(pushes)).toHaveLength(1);
+      expect(informedNudges(pushes)[0]).toContain('>On it, pulling the data…</sent_message>');
+    },
+  );
+
+  it.each(PROVIDER_MODES)(
+    'a retry that re-wraps what the tool already sent does not deliver it twice (%s)',
+    async (provider, midTurn) => {
+      seedDest();
+      const resend = '<message to="discord-main">FULL REPLY</message>';
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        // The tool keeps trailing whitespace; a block loses it.
+        toolSend('full-1', 'FULL REPLY\n');
+        yield { type: 'result', text: 'Sent.' };
+        if (midTurn) yield { type: 'text', text: resend };
+        yield { type: 'result', text: resend };
+      }
+      const { query, pushes } = makeStubQuery(events());
+      const exchanges: ProviderExchange[] = [];
+
+      await processQuery(query, CHAT_ROUTING, ['m1'], provider, (e) => exchanges.push(e), 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['FULL REPLY\n']);
+      expect(nudges(pushes)).toHaveLength(1);
+      expect(exchanges.map((e) => e.status)).toEqual(['undelivered', 'completed']);
+    },
+  );
+
+  it.each(PROVIDER_MODES)(
+    'a retry sends the missing part and skips only the exact repeat (%s)',
+    async (provider, midTurn) => {
+      seedDest();
+      const retry = '<message to="discord-main">On it</message><message to="discord-main">The answer is 4.</message>';
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        toolSend('ack-1', 'On it');
+        yield { type: 'result', text: 'The answer is 4.' };
+        if (midTurn) yield { type: 'text', text: retry };
+        yield { type: 'result', text: retry };
+      }
+      const { query } = makeStubQuery(events());
+
+      await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['On it', 'The answer is 4.']);
+    },
+  );
+
+  it.each(PROVIDER_MODES)(
+    'a retry that answers with bare prose again is not nudged twice (%s)',
+    async (provider, midTurn) => {
+      seedDest();
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        toolSend('ack-1', 'On it');
+        yield { type: 'result', text: 'The answer is 4.' };
+        yield { type: 'result', text: 'The answer is 4.' };
+      }
+      const { query, pushes } = makeStubQuery(events());
+
+      await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['On it']);
+      expect(nudges(pushes)).toHaveLength(1);
+    },
+  );
+
+  it.each(PROVIDER_MODES)(
+    'the repeat check does not reach past the nudged turn: a later turn may repeat the body (%s)',
+    async (provider, midTurn) => {
+      seedDest();
+      const block = '<message to="discord-main">FULL REPLY</message>';
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        toolSend('full-1', 'FULL REPLY');
+        yield { type: 'result', text: 'Sent.' };
+        yield { type: 'result', text: '<internal>done</internal>' };
+        // A new turn on the same open query.
+        if (midTurn) yield { type: 'text', text: block };
+        yield { type: 'result', text: block };
+      }
+      const { query } = makeStubQuery(events());
+
+      await processQuery(query, CHAT_ROUTING, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(deliveredTexts()).toEqual(['FULL REPLY', 'FULL REPLY']);
     },
   );
 
@@ -884,7 +1008,7 @@ describe('<message> blocks to another agent', () => {
   });
 
   it.each(PROVIDER_MODES)(
-    'a block back to a calling agent plus prose gets the informed nudge (%s)',
+    'a block back to the agent that woke the turn is the reply: trailing prose is not nudged (%s)',
     async (provider, midTurn) => {
       seedAgentDest('caller', 'ag-caller');
       const reply = '<message to="caller">Done.</message>';
@@ -899,7 +1023,27 @@ describe('<message> blocks to another agent', () => {
       await processQuery(query, agentRouting, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
 
       expect(deliveredTexts()).toEqual(['Done.']);
-      expect(informedNudges(pushes)[0]).toContain('<sent_message to="caller">Done.</sent_message>');
+      expect(nudges(pushes)).toHaveLength(0);
+    },
+  );
+
+  it.each(PROVIDER_MODES)(
+    'on an agent wake, a block to a different agent is still not the reply (%s)',
+    async (provider, midTurn) => {
+      seedAgentDest('caller', 'ag-caller');
+      seedAgentDest('worker', 'ag-worker');
+      const delegation = '<message to="worker">Check the arithmetic.</message>';
+      async function* events(): AsyncGenerator<ProviderEvent> {
+        yield { type: 'init', continuation: 's1' };
+        if (midTurn) yield { type: 'text', text: delegation };
+        yield { type: 'result', text: `${delegation}The answer is 4.` };
+      }
+      const { query, pushes } = makeStubQuery(events());
+      const agentRouting = { ...CHAT_ROUTING, platformId: 'ag-caller', channelType: 'agent' };
+
+      await processQuery(query, agentRouting, ['m1'], provider, undefined, 'prompt', undefined, midTurn);
+
+      expect(informedNudges(pushes)[0]).toContain('<sent_message to="worker">Check the arithmetic.</sent_message>');
     },
   );
 });
@@ -939,6 +1083,26 @@ describe('buildInformedWrapNudge', () => {
     expect(nudge).toContain('(+2 more)');
     expect(nudge).not.toContain('>d</sent_message>');
     expect(nudge).toContain('was not delivered');
+  });
+
+  it('clips by code point, never through a surrogate pair', () => {
+    const nudge = buildInformedWrapNudge(
+      [row(JSON.stringify({ text: `${'x'.repeat(199)}😀😀` }))],
+      `${'😀'.repeat(200)}tail`,
+      DESTS,
+    );
+    expect(nudge).toContain(`>${'x'.repeat(199)}😀…</sent_message>`);
+    expect(nudge).toContain(`<undelivered_text>${'😀'.repeat(200)}…</undelivered_text>`);
+    expect(nudge.isWellFormed()).toBe(true);
+  });
+
+  it('quotes a reaction as a reaction', () => {
+    const nudge = buildInformedWrapNudge(
+      [row(JSON.stringify({ operation: 'reaction', messageId: 'p-1', emoji: 'eyes' }))],
+      'Reacted.',
+      DESTS,
+    );
+    expect(nudge).toContain('<sent_message to="discord-main">[reaction: eyes]</sent_message>');
   });
 
   it('names attachments and tolerates unparseable rows', () => {
