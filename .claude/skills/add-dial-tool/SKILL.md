@@ -119,12 +119,12 @@ allow on purpose: OneCLI drops a deleted agent from a rule's identities, and a
 block left with none blocks every agent, where an allow left with none would
 open Dial to every agent. `all` means no rule at all. The pinned `onecli` CLI has
 no policy commands, so the script calls the policy API of the gateway the CLI is
-configured for, with the CLI's own key. It deletes and recreates the rule on
-every run, together with any `Dial: blocked for <group>` rule a legacy block was
-migrated to, publishes the policy, and reads the published generation back. An
-block is moved to the top of the order, so under first-match no operator allow
-can let a blocked agent through; the operator's own rules keep their relative
-order and are otherwise left alone. Agents another NanoClaw install on the same
+configured for, with the CLI's own key. On every run it creates the rule anew,
+moves it to the top of the order, deletes the earlier one and any `Dial:
+blocked for <group>` rule a legacy block was migrated to, publishes the policy,
+and reads the published generation back. The block sits first, so under
+first-match no operator allow can let a blocked agent through; the operator's
+own rules keep their relative order and are otherwise left alone. Agents another NanoClaw install on the same
 gateway blocked stay blocked. Publishing applies the whole policy draft, so
 finish or discard any edit left open in the OneCLI console first. The
 policy lands before any Dial sign-in or key write, and the credential step
@@ -318,10 +318,12 @@ skill; it only touches its own policy rule.
 not publish a policy, so it still runs on legacy rules; publishing now would
 pre-empt that migration. Check the gateway log for `policy-oss-cutover`.
 
-**A blocked agent still reaches Dial on gateway 1.42.** The gateway honours an
-operator kill switch, `POLICY_ENFORCE_V2=0` in its environment, that makes it
-ignore the published policy; nothing in the API shows it. Check the gateway's
-compose environment and unset it.
+**A blocked agent still reaches Dial on gateway 1.42.** Two causes. A rule was
+moved above `Dial: blocked agents` in the OneCLI console: re-run this skill,
+which moves the block back to the top. Or the gateway runs with the operator
+kill switch `POLICY_ENFORCE_V2=0` in its environment, which makes it ignore the
+published policy; nothing in the API shows it. Check the gateway's compose
+environment and unset it.
 
 **`dial: command not found` inside a container.** The image predates the manifest
 entry. Run `./container/build.sh`, then `ncl groups restart --id <group-id>` so the

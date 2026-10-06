@@ -251,8 +251,8 @@ export async function scopeDial(client: PolicyClient, scope: DialScope, groups: 
   if (blockedAgentIds.length > MAX_IDENTITIES) {
     throw new Error(`more than ${MAX_IDENTITIES} agents to block; OneCLI allows ${MAX_IDENTITIES} per rule`);
   }
-  // Create the new block first, then delete the old ones, so the draft holds
-  // a Dial block at every step. No agent left out (`all`, or every group
+  // Create the new block first and delete the old ones last, so the draft
+  // holds a Dial block, at the top, at every step. No agent left out (`all`, or every group
   // named) needs no rule; `none` before any group exists blocks every agent
   // until a group exists and the skill is re-run.
   const blockEveryone = scope.kind === 'none' && groups.length === 0;
@@ -267,14 +267,18 @@ export async function scopeDial(client: PolicyClient, scope: DialScope, groups: 
       targets: [{ kind: 'network', hostPattern: DIAL_HOST }],
     });
   }
-  for (const rule of draft.filter(isDialRule)) await client.deleteRule(rule.id);
-  // First-match: put the block at the top so no earlier operator allow can let
-  // a blocked agent through; every other rule keeps its relative order.
+  // First-match: put the Dial rules (the new one first, then the old ones) at
+  // the top so no earlier operator allow can let a blocked agent through;
+  // every other rule keeps its relative order. Reorder before deleting, so a
+  // failed reorder never leaves the new block at the bottom with the old
+  // ones gone.
   const after = await client.listRules('draft');
-  const ours = after.filter(isDialRule).map((r) => r.id);
+  const oldIds = new Set(draft.filter(isDialRule).map((r) => r.id));
+  const ours = after.filter(isDialRule).sort((a, b) => Number(oldIds.has(a.id)) - Number(oldIds.has(b.id)));
   if (ours.length) {
-    await client.reorder([...ours, ...after.filter((r) => !isDialRule(r)).map((r) => r.id)]);
+    await client.reorder([...ours, ...after.filter((r) => !isDialRule(r))].map((r) => r.id));
   }
+  for (const id of oldIds) await client.deleteRule(id);
   await client.publish();
 
   // Read the active generation back: exactly one block with exactly the

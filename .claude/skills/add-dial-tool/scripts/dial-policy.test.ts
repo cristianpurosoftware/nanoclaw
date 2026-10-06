@@ -177,9 +177,11 @@ describe('dial-policy: scoping through the v2 policy API', () => {
     ]);
     await scopeDial(gw, parseScope('ag-sales'), GROUPS);
     expect(gw.calls.filter((c) => c.startsWith('delete')).sort()).toEqual(['delete migrated', 'delete old']);
-    // The new block is created before the old ones go: the draft never lacks one.
-    const writes = gw.calls.filter((c) => c.startsWith('create') || c.startsWith('delete'));
-    expect(writes[0]).toMatch(/^create/);
+    // Create, reorder (new block first, old ones next), then delete: the draft
+    // never lacks a block at the top, even when the reorder fails.
+    const writes = gw.calls.filter((c) => /^(create|reorder|delete)/.test(c));
+    expect(writes.map((c) => c.split(' ')[0])).toEqual(['create', 'reorder', 'delete', 'delete']);
+    expect(writes[1]).toBe('reorder r1,old,migrated');
     expect(liveDial(gw).map((r) => [r.name, ids(r)])).toEqual([[BLOCK_RULE, ['oc-support']]]);
   });
 
