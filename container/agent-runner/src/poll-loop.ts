@@ -668,6 +668,11 @@ export async function processQuery(
             const names = destinations.map((d) => d.name).join(', ');
             // A tool send can't be told apart from an "on it" ack, so after
             // one the model sees what went out and decides; never a silent drop.
+            log(
+              sentThisTurn.length > 0
+                ? `Wrap-nudge pushed: quoting ${sentThisTurn.length} send(s) from this turn`
+                : 'Wrap-nudge pushed: nothing was sent this turn',
+            );
             pushRetry(
               sentThisTurn.length > 0
                 ? buildInformedWrapNudge(sentThisTurn, undelivered, destinations)
