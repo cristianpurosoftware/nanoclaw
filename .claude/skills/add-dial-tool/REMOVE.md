@@ -32,8 +32,8 @@ injected for every `all`-mode agent). Per-agent secret lists are not edited
 from its other secrets). The policy rules this skill keeps (`Dial: blocked
 agents`, and any `Dial: blocked for <group>` rule a legacy block was migrated
 to) are deleted through the policy API and the policy is published; an
-operator's own rules on `api.getdial.ai` stay. The script stops if the OneCLI
-console holds unpublished edits to other rules — publish or discard them there
+operator's own rules on `api.getdial.ai` stay. Publishing applies the whole
+policy draft, so finish or discard any edit left open in the OneCLI console
 first:
 
 ```bash

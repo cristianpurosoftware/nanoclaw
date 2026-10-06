@@ -499,7 +499,7 @@ describe('add-dial-tool: the skill engine gates every write on the guards', () =
     const { ran, res } = await apply((c) => {
       if (c.includes('/api/health')) return '1.42.0';
       if (c.includes('unknown agent group')) return 'all';
-      if (c.includes('dial-policy.ts')) throw new Error('the OneCLI policy draft has unpublished changes');
+      if (c.includes('dial-policy.ts')) throw new Error('POST /v1/policy/rules failed with 503');
       return undefined;
     });
     expect(ran.some((c) => c.includes('dial-policy.ts'))).toBe(true);

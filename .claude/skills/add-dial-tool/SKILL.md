@@ -125,8 +125,8 @@ migrated to, publishes the policy, and reads the published generation back. An
 operator's own rules are left alone and keep their place ahead of ours, so an
 operator allow on the Dial host would win: the script stops before writing
 anything and names that rule. Agents another NanoClaw install on the same
-gateway blocked stay blocked. Publishing applies the whole draft, so the script
-stops if the OneCLI console holds unpublished edits. The
+gateway blocked stay blocked. Publishing applies the whole policy draft, so
+finish or discard any edit left open in the OneCLI console first. The
 policy lands before any Dial sign-in or key write, and the credential step
 below depends on this capture, so the key can never exist without the block.
 The capture is ids and the word `published` only (names stay on stderr), since
@@ -312,10 +312,6 @@ key the host is signed in with.
 **An agent you left out can still use Dial.** It was created after the last run
 (a new OneCLI agent starts in `all` mode and is not in the block). Re-run this
 skill; it only touches its own policy rule.
-
-**`the OneCLI policy draft has unpublished changes`.** Someone edited the policy
-in the OneCLI console and did not publish. Publish or discard that edit there,
-then re-run.
 
 **`allows api.getdial.ai ahead of the Dial block`.** An operator rule on the
 gateway allows the Dial host, and under first-match it would beat the block.

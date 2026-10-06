@@ -16,7 +16,6 @@ import {
   parseScope,
   removeDial,
   scopeDial,
-  unpublishedChanges,
   type OneCliAgent,
   type PolicyClient,
   type PolicyRule,
@@ -53,7 +52,6 @@ class FakeGateway implements PolicyClient {
   draft: PolicyRule[] = [];
   published: PolicyRule[] = [];
   secrets: Array<{ id: string; name: string; hostPattern: string }> = [];
-  defaults = { draft: 'allow', published: 'allow' };
   calls: string[] = [];
   private seq = 0;
   constructor(
@@ -74,9 +72,6 @@ class FakeGateway implements PolicyClient {
   async listRules(status: 'draft' | 'published') {
     this.calls.push(`list ${status}`);
     return (status === 'draft' ? this.draft : this.published).map((r) => ({ ...r }));
-  }
-  async defaultAction(status: 'draft' | 'published') {
-    return this.defaults[status];
   }
   async createRule(body: unknown) {
     const b = body as Partial<PolicyRule>;
@@ -291,39 +286,6 @@ describe('dial-policy: scoping through the v2 policy API', () => {
     expect(liveDial(all).map(ids)).toEqual([['oc-other-install']]);
   });
 
-  it('refuses to publish over an unpublished console edit, before and right before publishing', async () => {
-    const op = rule({
-      id: 'op',
-      logicalId: 'o',
-      name: 'ops',
-      targets: [{ kind: 'network', hostPattern: 'x.example' }],
-    });
-    const gw = new FakeGateway(AGENTS, [op]);
-    gw.draft[0] = { ...gw.draft[0], enabled: false };
-    await expect(scopeDial(gw, parseScope('all'), GROUPS)).rejects.toThrow(/unpublished changes \(ops\)/);
-    expect(gw.calls.some((c) => c.startsWith('create') || c.startsWith('delete') || c === 'publish')).toBe(false);
-
-    // An edit that lands while the script runs is caught by the re-check.
-    const late = new FakeGateway(AGENTS, [op]);
-    const create = late.createRule.bind(late);
-    late.createRule = async (body) => {
-      const r = await create(body);
-      late.draft.push(
-        rule({
-          id: 'sneaky',
-          logicalId: 'ls',
-          name: 'sneaky allow',
-          action: 'allow',
-          priority: 99,
-          targets: [{ kind: 'network', hostPattern: 'y.example' }],
-        }),
-      );
-      return r;
-    };
-    await expect(scopeDial(late, parseScope('none'), GROUPS)).rejects.toThrow(/unpublished changes \(sneaky allow\)/);
-    expect(late.calls).not.toContain('publish');
-  });
-
   it('fails before writing when a group has no OneCLI agent or an id is unknown', async () => {
     const gw = new FakeGateway([AGENTS[1]]);
     await expect(scopeDial(gw, parseScope('ag-sales'), GROUPS)).rejects.toThrow(/no OneCLI agent for Support/);
@@ -376,24 +338,6 @@ describe('dial-policy: removal', () => {
     expect(empty.calls).not.toContain('publish');
   });
 
-  it('re-checks for console edits right before publishing the removal', async () => {
-    const gw = new FakeGateway(AGENTS, [rule({ id: 'b', logicalId: 'lb' })]);
-    const del = gw.deleteRule.bind(gw);
-    gw.deleteRule = async (id) => {
-      await del(id);
-      gw.draft.push(
-        rule({
-          id: 'late',
-          logicalId: 'll',
-          name: 'late edit',
-          targets: [{ kind: 'network', hostPattern: 'z.example' }],
-        }),
-      );
-    };
-    await expect(removeDial(gw)).rejects.toThrow(/unpublished changes \(late edit\)/);
-    expect(gw.calls).not.toContain('publish');
-  });
-
   it('refuses while a Dial secret is still in the vault, also one written while it runs', async () => {
     const gw = new FakeGateway(AGENTS, [rule({ id: 'b', logicalId: 'lb' })]);
     gw.secrets = [{ id: 's', name: 'Dial API', hostPattern: DIAL_HOST }];
@@ -411,41 +355,6 @@ describe('dial-policy: removal', () => {
   });
 });
 
-describe('dial-policy: unpublished-change detection', () => {
-  const op = rule({ id: 'd1', logicalId: 'x', name: 'ops', targets: [{ kind: 'network', hostPattern: 'x.example' }] });
-  const published = { ...op, id: 'p1' };
-  it('ignores row ids, Dial rules and bridge-derived rows; flags edits, adds and deletes', () => {
-    expect(unpublishedChanges([op], [published])).toEqual([]);
-    expect(unpublishedChanges([op, rule({ id: 'z', logicalId: 'z', priority: 9 })], [published])).toEqual([]);
-    expect(
-      unpublishedChanges([op, { ...op, id: 'e', logicalId: 'e', name: 'equipment', source: 'equipment' }], [published]),
-    ).toEqual([]);
-    expect(unpublishedChanges([{ ...op, enabled: false }], [published])).toEqual(['ops']);
-    expect(unpublishedChanges([op, { ...op, id: 'n', logicalId: 'n', name: 'new', priority: 2 }], [published])).toEqual(
-      ['new'],
-    );
-    expect(unpublishedChanges([], [published])).toEqual(['ops']);
-  });
-  it('flags modifier, condition, order and default-rule changes', () => {
-    expect(unpublishedChanges([{ ...op, requireApproval: true }], [published])).toEqual(['ops']);
-    expect(unpublishedChanges([{ ...op, rateLimit: 5, rateLimitWindow: 'minute' }], [published])).toEqual(['ops']);
-    expect(unpublishedChanges([{ ...op, conditions: [{ field: 'body', contains: 'x' }] }], [published])).toEqual([
-      'ops',
-    ]);
-    const two = { ...op, id: 'd2', logicalId: 'y', name: 'two', priority: 2 };
-    expect(unpublishedChanges([op, two], [published, { ...two, id: 'p2' }])).toEqual([]);
-    expect(unpublishedChanges([{ ...op, priority: 3 }, two], [published, { ...two, id: 'p2' }])).toEqual([
-      '(rule order)',
-    ]);
-    expect(unpublishedChanges([op], [published], { draft: 'block', published: 'allow' })).toEqual(['(default rule)']);
-    // Moving a custom rule across a derived blocklist row is a reorder too.
-    const deny = { ...op, id: 'b1', logicalId: 'bl', name: 'blocklist', source: 'blocklist', priority: 1 };
-    const allow = { ...op, id: 'a1', logicalId: 'al', name: 'later allow', action: 'allow', priority: 2 };
-    expect(unpublishedChanges([deny, allow], [deny, allow])).toEqual([]);
-    expect(unpublishedChanges([{ ...allow, priority: 0 }, deny], [deny, allow])).toEqual(['(rule order)']);
-  });
-});
-
 describe('dial-policy: the HTTP client', () => {
   it('sends the bearer key to the policy routes and surfaces the error envelope', async () => {
     const seen: Array<[string, RequestInit]> = [];
@@ -454,7 +363,6 @@ describe('dial-policy: the HTTP client', () => {
       if (init.method === 'DELETE') return new Response(null, { status: 204 });
       if (url.endsWith('/v1/policy/publish')) return new Response('{"generation":2,"ruleCount":3}');
       if (url.includes('/v1/policy/rules?status=')) return new Response('[]');
-      if (url.includes('/v1/policy/default?status=')) return new Response('{"isDefault":true,"action":"allow"}');
       if (url.endsWith('/v1/secrets')) {
         return new Response('[{"id":"s","name":"Dial API","hostPattern":"api.getdial.ai","valuePreview":"x"}]');
       }
@@ -469,7 +377,6 @@ describe('dial-policy: the HTTP client', () => {
     const client = createPolicyClient('http://gw.test:10254/', 'oc_key', transport as unknown as typeof fetch);
     expect(await client.listAgents()).toEqual([{ id: 'oc-1', identifier: 'ag-1', name: 'One' }]);
     expect(await client.listRules('published')).toEqual([]);
-    expect(await client.defaultAction('draft')).toBe('allow');
     expect(await client.listSecrets()).toEqual([{ id: 's', name: 'Dial API', hostPattern: 'api.getdial.ai' }]);
     await client.deleteRule('r/1');
     await client.publish();
@@ -478,7 +385,6 @@ describe('dial-policy: the HTTP client', () => {
     expect(seen.map(([u, i]) => `${i.method} ${u}`)).toEqual([
       'GET http://gw.test:10254/v1/agents',
       'GET http://gw.test:10254/v1/policy/rules?status=published',
-      'GET http://gw.test:10254/v1/policy/default?status=draft',
       'GET http://gw.test:10254/v1/secrets',
       'DELETE http://gw.test:10254/v1/policy/rules/r%2F1',
       'POST http://gw.test:10254/v1/policy/publish',
@@ -486,7 +392,7 @@ describe('dial-policy: the HTTP client', () => {
       'POST http://gw.test:10254/v1/policy/rules',
     ]);
     for (const [, init] of seen) expect((init.headers as Record<string, string>).Authorization).toBe('Bearer oc_key');
-    expect((seen[6][1].headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect((seen[5][1].headers as Record<string, string>)['Content-Type']).toBe('application/json');
   });
 
   it('goes without a key when the CLI has none, and rejects a bad host', async () => {
@@ -528,7 +434,6 @@ describe('dial-policy: the command', () => {
         if (req.url === '/v1/secrets') return json(200, secrets);
         if (req.url === '/v1/policy/rules?status=draft') return json(200, draft);
         if (req.url === '/v1/policy/rules?status=published') return json(200, published);
-        if (req.url?.startsWith('/v1/policy/default')) return json(200, { isDefault: true, action: 'allow' });
         if (req.method === 'POST' && req.url === '/v1/policy/rules') {
           const b = JSON.parse(body) as Record<string, unknown>;
           const created = {

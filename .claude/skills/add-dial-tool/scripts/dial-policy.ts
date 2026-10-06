@@ -55,10 +55,6 @@ export interface PolicyRule {
   action: string;
   enabled: boolean;
   priority: number;
-  requireApproval?: boolean;
-  rateLimit?: number | null;
-  rateLimitWindow?: string | null;
-  conditions?: unknown;
   identities: PolicyIdentity[];
   targets: PolicyTarget[];
 }
@@ -77,7 +73,6 @@ export interface PolicyClient {
   /** Vault metadata only (ids, names, hosts): never values. */
   listSecrets(): Promise<Array<{ id: string; name: string; hostPattern: string }>>;
   listRules(status: 'draft' | 'published'): Promise<PolicyRule[]>;
-  defaultAction(status: 'draft' | 'published'): Promise<string>;
   createRule(body: unknown): Promise<PolicyRule>;
   deleteRule(id: string): Promise<void>;
   publish(): Promise<void>;
@@ -164,10 +159,6 @@ export function createPolicyClient(
         }
         return r as unknown as PolicyRule;
       }),
-    defaultAction: async (status) => {
-      const d = await request('GET', `/v1/policy/default?status=${status}`);
-      return isRecord(d) && typeof d.action === 'string' ? d.action : '';
-    },
     createRule: async (body) => (await request('POST', '/v1/policy/rules', body)) as PolicyRule,
     deleteRule: async (id) => {
       await request('DELETE', `/v1/policy/rules/${encodeURIComponent(id)}`);
@@ -220,71 +211,6 @@ const foreignAllowOnDial = (rule: PolicyRule, dialSecretIds: Set<string>): boole
     return false;
   });
 
-/**
- * Publishing applies the WHOLE draft, so an operator's half-finished edit in
- * the OneCLI console would go live with ours. Compare everything that decides
- * a request — the custom rules that are not this skill's, in their order, with
- * every field the engine reads — plus the default action, between the draft and
- * the active published generation. Bridge-derived rows (blocklist, equipment)
- * are rematerialized by OneCLI itself and skipped.
- */
-export function unpublishedChanges(
-  draft: PolicyRule[],
-  published: PolicyRule[],
-  defaults?: { draft: string; published: string },
-): string[] {
-  const foreign = (rules: PolicyRule[]) =>
-    [...rules].filter((r) => r.source === 'custom' && !isDialRule(r)).sort((a, b) => a.priority - b.priority);
-  const shape = (r: PolicyRule): string =>
-    JSON.stringify([
-      r.name,
-      r.action,
-      r.enabled,
-      r.requireApproval ?? false,
-      r.rateLimit ?? null,
-      r.rateLimitWindow ?? null,
-      r.conditions ?? null,
-      [...r.identities].map((i) => `${i.type}:${i.id}`).sort(),
-      [...r.targets].map((t) => JSON.stringify(t)).sort(),
-    ]);
-  const d = foreign(draft);
-  const p = foreign(published);
-  const names = new Set<string>();
-  const pById = new Map(p.map((r) => [r.logicalId, r]));
-  for (const rule of d) {
-    const was = pById.get(rule.logicalId);
-    if (!was || shape(was) !== shape(rule)) names.add(rule.name);
-  }
-  const dIds = new Set(d.map((r) => r.logicalId));
-  for (const rule of p) if (!dIds.has(rule.logicalId)) names.add(rule.name);
-  // Same set, different order: the order IS the policy under first-match, and
-  // a custom rule moved across a derived (blocklist) row changes it too, so
-  // the order check spans every non-Dial rule both sides know (a derived row
-  // mid-rematerialization on one side only is OneCLI's, not an edit).
-  const known = new Set(draft.map((r) => r.logicalId).filter((id) => published.some((r) => r.logicalId === id)));
-  const order = (rules: PolicyRule[]) =>
-    [...rules]
-      .filter((r) => !isDialRule(r) && known.has(r.logicalId))
-      .sort((a, b) => a.priority - b.priority)
-      .map((r) => r.logicalId)
-      .join('\n');
-  if (!names.size && order(draft) !== order(published)) names.add('(rule order)');
-  if (defaults && defaults.draft !== defaults.published) names.add('(default rule)');
-  return [...names].sort();
-}
-
-async function assertNoUnpublishedChanges(client: PolicyClient): Promise<void> {
-  const pending = unpublishedChanges(await client.listRules('draft'), await client.listRules('published'), {
-    draft: await client.defaultAction('draft'),
-    published: await client.defaultAction('published'),
-  });
-  if (pending.length) {
-    throw new Error(
-      `the OneCLI policy draft has unpublished changes (${pending.join(', ')}). Publish or discard them in the OneCLI console, then re-run.`,
-    );
-  }
-}
-
 export type DialScope = { kind: 'all' } | { kind: 'none' } | { kind: 'ids'; ids: string[] };
 
 export function parseScope(raw: string): DialScope {
@@ -332,7 +258,6 @@ export async function scopeDial(client: PolicyClient, scope: DialScope, groups: 
   const blocked = groups.filter((g) => !chosen.some((c) => c.id === g.id));
   const ours = new Set(groups.map((g) => agentOf.get(g.id)!.id));
 
-  await assertNoUnpublishedChanges(client);
   const draft = await client.listRules('draft');
   const published = await client.listRules('published');
   // First-match: an operator's allow on the Dial host sits ahead of our block
@@ -376,9 +301,6 @@ export async function scopeDial(client: PolicyClient, scope: DialScope, groups: 
       targets: [{ kind: 'network', hostPattern: DIAL_HOST }],
     });
   }
-  // Re-check right before going live: the window between the first check and
-  // here is where a console edit could slip into our publish.
-  await assertNoUnpublishedChanges(client);
   await client.publish();
 
   // Read the active generation back: the block must be live with exactly the
@@ -418,14 +340,12 @@ export async function removeDial(client: PolicyClient): Promise<number> {
     }
   };
   await assertNoDialSecret();
-  await assertNoUnpublishedChanges(client);
   const draft = await deleteDialRules(client);
   const live = (await client.listRules('published')).filter(isDialRule).length;
   if (draft || live) {
-    // Re-check both right before going live: a key written meanwhile would
-    // otherwise go unblocked, a console edit would be published with ours.
+    // Re-check right before going live: a key written meanwhile would
+    // otherwise go unblocked.
     await assertNoDialSecret();
-    await assertNoUnpublishedChanges(client);
     await client.publish();
   }
   return draft;
