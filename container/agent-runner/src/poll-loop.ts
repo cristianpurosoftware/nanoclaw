@@ -834,7 +834,10 @@ export interface TaskMessageBlock {
 }
 
 /** Options for `dispatchResultText`, describing the turn it closes. */
-export interface ResultDispatchOptions {
+export type ResultDispatchOptions = ResultDispatchCounts &
+  ({ suppressDelivery: true; turnStartSeq: number } | { suppressDelivery?: false; turnStartSeq?: number });
+
+interface ResultDispatchCounts {
   /**
    * How many <message> blocks were already delivered from streamed text
    * events this turn. Folds into the returned `sent` total so a bare final
@@ -845,12 +848,6 @@ export interface ResultDispatchOptions {
   midTurnSent?: number;
   /** The midTurnSent blocks that count as the reply (see answersBatch). Defaults to midTurnSent. */
   midTurnReplied?: number;
-  /**
-   * Outbound seq at the turn boundary. With `suppressDelivery`, a result block
-   * is a repeat only if this exact message was written since then; without
-   * it, any mid-turn delivery marks every result block as a repeat.
-   */
-  turnStartSeq?: number;
   /** On a wrap-nudge retry: rows the nudged turn wrote. An exact repeat of one is not sent again. */
   nudgedWindow?: SeqWindow;
   /**
@@ -866,9 +863,10 @@ export interface ResultDispatchOptions {
    * so the retry streams through the mid-turn door: the degradation path
    * for streaming-door misses, never a direct result-door send. Task runs,
    * unknown destinations and empty bodies keep their existing result-door
-   * handling, none of which delivers content.
+   * handling, none of which delivers content. Requires `turnStartSeq`, the
+   * outbound seq at the turn boundary: a result block is a repeat only if
+   * this exact message was written since then.
    */
-  suppressDelivery?: boolean;
 }
 /**
  * `<internal>…</internal>` spans are explicitly not-for-delivery scratchpad.
@@ -1046,13 +1044,14 @@ function maxOutboundSeq(): number {
   return getUndeliveredMessages().reduce((max, message) => Math.max(max, message.seq ?? 0), 0);
 }
 
+/** Outbound seq window (after, upto]. */
+type SeqWindow = { after: number; upto: number };
+
 /**
  * Chat rows written to outbound.db in the seq window (afterSeq, uptoSeq]:
  * door, tool and error sends alike. Every caller fails toward a nudge or a
  * delivery, so a lookup error returns none.
  */
-type SeqWindow = { after: number; upto: number };
-
 function chatRowsInWindow(afterSeq: number, uptoSeq = Infinity): MessageOutRow[] {
   try {
     // ponytail: reuse the existing semantic read; add a cursor operation only if history scans show up in profiles.
@@ -1139,6 +1138,19 @@ function clipCodePoints(text: string, max: number): string {
  * a true door-written duplicate always matches; a body differing by even one
  * character is a different message and delivers.
  */
+function wasWrittenInSeqWindow(dest: DestinationEntry, body: string, afterSeq: number, uptoSeq: number): boolean {
+  if (uptoSeq <= afterSeq) return false;
+  const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
+  const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+  const content = JSON.stringify({ text: body });
+  // A lookup error reads as "not written": the guard falls through to
+  // delivery, and the write surfaces any real DB breakage loudly.
+  return chatRowsInWindow(afterSeq, uptoSeq).some(
+    (message) =>
+      message.platform_id === platformId && message.channel_type === channelType && message.content === content,
+  );
+}
+
 /**
  * Did the nudged turn already send this body to this destination? Compares
  * trimmed text, since a tool send keeps the whitespace a block loses.
@@ -1156,19 +1168,6 @@ function wasWrittenInWindow(dest: DestinationEntry, body: string, window: SeqWin
       return false;
     }
   });
-}
-
-function wasWrittenInSeqWindow(dest: DestinationEntry, body: string, afterSeq: number, uptoSeq: number): boolean {
-  if (uptoSeq <= afterSeq) return false;
-  const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
-  const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
-  const content = JSON.stringify({ text: body });
-  // A lookup error reads as "not written": the guard falls through to
-  // delivery, and the write surfaces any real DB breakage loudly.
-  return chatRowsInWindow(afterSeq, uptoSeq).some(
-    (message) =>
-      message.platform_id === platformId && message.channel_type === channelType && message.content === content,
-  );
 }
 
 export async function dispatchResultText(
@@ -1248,9 +1247,7 @@ export async function dispatchResultText(
       // Exact match, so a streamed delegation can't hide an unstreamed answer.
       const repeat =
         wasWrittenInWindow(dest, body, options.nudgedWindow) ||
-        (options.turnStartSeq === undefined
-          ? sent > 0
-          : wasWrittenInSeqWindow(dest, body, options.turnStartSeq, maxOutboundSeq()));
+        wasWrittenInSeqWindow(dest, body, options.turnStartSeq, maxOutboundSeq());
       if (repeat) {
         log(`<message to="${toName}"> in final result after a same-turn delivery — repeat, result door does not send`);
       } else {
