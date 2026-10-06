@@ -1,25 +1,14 @@
-// Scope Dial to the chosen agents through the OneCLI v2 policy API.
+// Scope Dial to the chosen agents through the OneCLI v2 policy API
+// (/v1/policy), which the pinned gateway enforces; the pinned CLI has no
+// policy commands, so this talks HTTP with the CLI's own key.
 //
-// OneCLI gateway 1.42 enforces the first-match policy engine (`/v1/policy`)
-// and rejects legacy rule writes with 410, so the per-agent block rules the
-// skill used to write cannot be created any more. The pinned CLI (2.2.5) has no
-// policy commands, so this script talks to the HTTP API of the gateway the CLI
-// is configured for, with the key the CLI itself uses (`onecli auth api-key`),
-// the way add-onecli's provider-credentials script does for secrets.
-//
-// The policy it keeps is one BLOCK rule, "Dial: blocked agents", on the host
-// api.getdial.ai whose identities are every NanoClaw agent that was not chosen
-// (the same thing the legacy per-agent block rules expressed). Block rules
-// fail closed: OneCLI cascade-deletes a rule's identities with the agent, and
-// a block left with no identities blocks EVERY agent, whereas an allow rule
-// in that state would open Dial to every agent. So no allow rule is written,
-// and `all` means no rule at all. The rule is deleted and recreated on every
-// run, together with any rule a legacy per-agent block was migrated to
-// ("Dial: blocked for <group>"), and the draft is published. Agents the rule
-// already blocked that are not this install's groups (another NanoClaw on
-// the same gateway) stay blocked. An operator's own rules are never touched;
-// since they sit earlier in the order and win first-match, an operator allow
-// on the Dial host stops the run instead of silently losing to it.
+// One BLOCK rule, "Dial: blocked agents", on api.getdial.ai names the agents
+// not chosen; `all` means no rule. A block and never an allow: OneCLI drops a
+// deleted agent from a rule's identities, and a rule with none matches every
+// agent, so a leftover allow would open Dial to everyone while a leftover
+// block only closes it. The block is moved to the top of the order, so under
+// first-match no operator allow can let a blocked agent through; operator
+// rules keep their relative order and are otherwise never touched.
 //
 // Usage (from the NanoClaw repo root):
 //   pnpm exec tsx .claude/skills/add-dial-tool/scripts/dial-policy.ts scope --agents <all|none|ag-1,ag-2>
@@ -32,8 +21,8 @@ export const DIAL_HOST = 'api.getdial.ai';
 export const BLOCK_RULE = 'Dial: blocked agents';
 /** The legacy per-agent block rules migrate under their own names. */
 const LEGACY_BLOCK_PREFIX = 'Dial: blocked for ';
-/** OneCLI caps identities per rule; more blocked agents take more rules. */
-const IDENTITIES_PER_RULE = 100;
+/** OneCLI caps a rule's identities (validations/policy.ts: max 100). */
+const MAX_IDENTITIES = 100;
 
 export interface PolicyIdentity {
   type: string;
@@ -73,6 +62,10 @@ export interface PolicyClient {
   /** Vault metadata only (ids, names, hosts): never values. */
   listSecrets(): Promise<Array<{ id: string; name: string; hostPattern: string }>>;
   listRules(status: 'draft' | 'published'): Promise<PolicyRule[]>;
+  /** True once the gateway's boot cutover published a generation (its Default Rule has an id). */
+  cutOver(): Promise<boolean>;
+  /** Set the whole draft order; must name every non-default draft rule once. */
+  reorder(orderedIds: string[]): Promise<void>;
   createRule(body: unknown): Promise<PolicyRule>;
   deleteRule(id: string): Promise<void>;
   publish(): Promise<void>;
@@ -159,6 +152,13 @@ export function createPolicyClient(
         }
         return r as unknown as PolicyRule;
       }),
+    cutOver: async () => {
+      const d = await request('GET', '/v1/policy/default?status=published');
+      return isRecord(d) && typeof d.id === 'string' && d.id !== '';
+    },
+    reorder: async (orderedIds) => {
+      await request('PUT', '/v1/policy/rules/order', { orderedIds });
+    },
     createRule: async (body) => (await request('POST', '/v1/policy/rules', body)) as PolicyRule,
     deleteRule: async (id) => {
       await request('DELETE', `/v1/policy/rules/${encodeURIComponent(id)}`);
@@ -182,34 +182,6 @@ export const isDialRule = (rule: PolicyRule): boolean =>
   wholeDialHost(rule) &&
   (rule.name === BLOCK_RULE ||
     (rule.name.startsWith(LEGACY_BLOCK_PREFIX) && rule.name.length > LEGACY_BLOCK_PREFIX.length));
-
-const hostPatternCoversDial = (pattern: string): boolean => {
-  const star = pattern.indexOf('*');
-  if (star < 0) return pattern.toLowerCase() === DIAL_HOST;
-  const prefix = pattern.slice(0, star).toLowerCase();
-  const suffix = pattern.slice(star + 1).toLowerCase();
-  return (
-    DIAL_HOST.length >= prefix.length + suffix.length && DIAL_HOST.startsWith(prefix) && DIAL_HOST.endsWith(suffix)
-  );
-};
-
-/**
- * An operator allow that reaches the Dial host; ahead of our block it wins. A
- * secret target permits the hosts of the secrets it names: every project
- * secret for a scope target (the Dial key included, once it exists), or the
- * one secret for an id target. Bridge-derived equipment rows are injection
- * only and never decide, so only custom rules count.
- */
-const foreignAllowOnDial = (rule: PolicyRule, dialSecretIds: Set<string>): boolean =>
-  rule.source === 'custom' &&
-  !isDialRule(rule) &&
-  rule.enabled &&
-  rule.action === 'allow' &&
-  rule.targets.some((t) => {
-    if (t.kind === 'network') return !!t.hostPattern && hostPatternCoversDial(t.hostPattern);
-    if (t.kind === 'secret') return !!t.secretScope || (!!t.secretId && dialSecretIds.has(t.secretId));
-    return false;
-  });
 
 export type DialScope = { kind: 'all' } | { kind: 'none' } | { kind: 'ids'; ids: string[] };
 
@@ -256,71 +228,66 @@ export async function scopeDial(client: PolicyClient, scope: DialScope, groups: 
   const chosen =
     scope.kind === 'all' ? groups : scope.kind === 'none' ? [] : groups.filter((g) => scope.ids.includes(g.id));
   const blocked = groups.filter((g) => !chosen.some((c) => c.id === g.id));
-  const ours = new Set(groups.map((g) => agentOf.get(g.id)!.id));
+  const ownAgents = new Set(groups.map((g) => agentOf.get(g.id)!.id));
 
-  const draft = await client.listRules('draft');
-  const published = await client.listRules('published');
-  // First-match: an operator's allow on the Dial host sits ahead of our block
-  // and would win. Stop before writing anything rather than publish a block
-  // that does not block.
-  const dialSecretIds = new Set(
-    (await client.listSecrets()).filter((x) => hostPatternCoversDial(x.hostPattern)).map((x) => x.id),
-  );
-  const ahead = draft.filter((r) => foreignAllowOnDial(r, dialSecretIds)).map((r) => `"${r.name}"`);
-  if (ahead.length) {
+  // A project whose 1.42 boot cutover has not published a generation still
+  // runs on legacy rules; a publish here would pre-empt that migration
+  // (policy-oss-cutover.ts PREEMPTED) and silently drop those rules.
+  if (!(await client.cutOver())) {
     throw new Error(
-      `the OneCLI policy rule ${ahead.join(', ')} allows ${DIAL_HOST} ahead of the Dial block, so the block would not apply. Remove it or make it narrower in the OneCLI console, then re-run.`,
+      'this OneCLI project has no published policy yet (its 1.42 migration did not run); check the gateway log for policy-oss-cutover, then re-run',
     );
   }
+  const draft = await client.listRules('draft');
+  const published = await client.listRules('published');
   // Agents another NanoClaw install on this gateway blocked stay blocked: only
   // this install's groups are reconciled (the legacy per-agent rules behaved
   // the same way). The published set counts too, so a run interrupted after
-  // the delete does not lose them on retry. Identities of deleted agents are
-  // already gone.
+  // the delete does not lose them on retry.
   const foreignBlocked = [...draft, ...published]
     .filter(isDialRule)
-    .flatMap((r) => r.identities.filter((i) => i.type === 'agent' && !ours.has(i.id)).map((i) => i.id));
+    .flatMap((r) => r.identities.filter((i) => i.type === 'agent' && !ownAgents.has(i.id)).map((i) => i.id));
   const blockedAgentIds = [...new Set([...foreignBlocked, ...blocked.map((g) => agentOf.get(g.id)!.id)])];
-  await deleteDialRules(client);
-  // No agent left out (`all`, or every group named) needs no rule. `none`
-  // before any group exists blocks every agent (no identities = any agent)
-  // until a group exists and the skill is re-run.
-  const chunks: string[][] = [];
-  for (let i = 0; i < blockedAgentIds.length; i += IDENTITIES_PER_RULE) {
-    chunks.push(blockedAgentIds.slice(i, i + IDENTITIES_PER_RULE));
+  if (blockedAgentIds.length > MAX_IDENTITIES) {
+    throw new Error(`more than ${MAX_IDENTITIES} agents to block; OneCLI allows ${MAX_IDENTITIES} per rule`);
   }
+  // Create the new block first, then delete the old ones, so the draft holds
+  // a Dial block at every step. No agent left out (`all`, or every group
+  // named) needs no rule; `none` before any group exists blocks every agent
+  // until a group exists and the skill is re-run.
   const blockEveryone = scope.kind === 'none' && groups.length === 0;
-  if (blockEveryone) chunks.push([]);
-  for (const ids of chunks) {
+  if (blockedAgentIds.length || blockEveryone) {
     await client.createRule({
       name: BLOCK_RULE,
       description:
         'Managed by NanoClaw /add-dial-tool: the agents that may not use Dial. Re-run the skill to change it.',
       action: 'block',
-      identities: ids.map((id) => ({ type: 'agent', id })),
+      // Everyone blocked = no identities; naming any would narrow it.
+      identities: blockEveryone ? [] : blockedAgentIds.map((id) => ({ type: 'agent', id })),
       targets: [{ kind: 'network', hostPattern: DIAL_HOST }],
     });
   }
+  for (const rule of draft.filter(isDialRule)) await client.deleteRule(rule.id);
+  // First-match: put the block at the top so no earlier operator allow can let
+  // a blocked agent through; every other rule keeps its relative order.
+  const after = await client.listRules('draft');
+  const ours = after.filter(isDialRule).map((r) => r.id);
+  if (ours.length) {
+    await client.reorder([...ours, ...after.filter((r) => !isDialRule(r)).map((r) => r.id)]);
+  }
   await client.publish();
 
-  // Read the active generation back: the block must be live with exactly the
-  // agents that were not chosen.
-  const live = await client.listRules('published');
-  const mine = live.filter(isDialRule);
-  const liveIds = mine.flatMap((r) => r.identities.filter((i) => i.type === 'agent').map((i) => i.id)).sort();
-  if (mine.some((r) => !r.enabled || r.name !== BLOCK_RULE)) {
-    throw new Error('the published OneCLI policy still carries a stale or disabled Dial rule');
-  }
-  if (liveIds.join('\n') !== [...blockedAgentIds].sort().join('\n')) {
-    throw new Error('the published OneCLI policy does not block exactly the agents that were not chosen');
-  }
-  // An identity-less block is "every agent": only ever intended for `none`
-  // before the first group; anywhere else it would cut the chosen agents off.
+  // Read the active generation back: exactly one block with exactly the
+  // agents that were not chosen, or none.
+  const mine = (await client.listRules('published')).filter(isDialRule);
+  const liveIds = mine.flatMap((r) => r.identities.map((i) => i.id)).sort();
+  const expected = blockedAgentIds.length || blockEveryone ? 1 : 0;
   if (
-    mine.some((r) => r.identities.length === 0) !== blockEveryone ||
-    (!blockEveryone && mine.length !== chunks.length)
+    mine.length !== expected ||
+    !mine.every((r) => r.enabled) ||
+    liveIds.join() !== (blockEveryone ? [] : [...blockedAgentIds].sort()).join()
   ) {
-    throw new Error('the published OneCLI policy blocks a different set of agents than intended');
+    throw new Error('the published OneCLI policy does not block exactly the agents that were not chosen');
   }
   return { allowed: chosen, blocked };
 }
@@ -342,12 +309,7 @@ export async function removeDial(client: PolicyClient): Promise<number> {
   await assertNoDialSecret();
   const draft = await deleteDialRules(client);
   const live = (await client.listRules('published')).filter(isDialRule).length;
-  if (draft || live) {
-    // Re-check right before going live: a key written meanwhile would
-    // otherwise go unblocked.
-    await assertNoDialSecret();
-    await client.publish();
-  }
+  if (draft || live) await client.publish();
   return draft;
 }
 
@@ -381,7 +343,8 @@ export function cliConnection(): { url: string; apiKey: string } {
 function agentGroups(): AgentGroup[] {
   let payload: unknown;
   try {
-    payload = JSON.parse(run('ncl', ['groups', 'list', '--json']));
+    // `ncl` lists 200 rows by default; ask for every group.
+    payload = JSON.parse(run('ncl', ['groups', 'list', '--json', '--limit', '100000']));
   } catch {
     throw new Error('could not list agent groups — is the NanoClaw host running?');
   }

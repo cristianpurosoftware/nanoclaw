@@ -93,7 +93,7 @@ installs, signs in, or writes a credential below depends on the capture: a bad
 answer stops them all, nothing is written:
 
 ```nc:run capture:dial_scope validate:^(all|none|ag-[A-Za-z0-9-]+(,ag-[A-Za-z0-9-]+)*)$ effect:fetch
-A=$(printf '%s' '{{dial_agents}}' | tr -d ' '); G=$(ncl groups list --json) || { echo "could not list agent groups — is the NanoClaw host running?" >&2; exit 1; }; for w in $(printf '%s' "$A" | tr ',' ' '); do case "$w" in all|none) ;; *) printf '%s' "$G" | jq -e --arg id "$w" '.data[] | select(.id==$id)' >/dev/null || { echo "unknown agent group '$w' — see: ncl groups list" >&2; exit 1; }; esac; done; printf '%s\n' "$A"
+A=$(printf '%s' '{{dial_agents}}' | tr -d ' '); G=$(ncl groups list --json --limit 100000) || { echo "could not list agent groups — is the NanoClaw host running?" >&2; exit 1; }; for w in $(printf '%s' "$A" | tr ',' ' '); do case "$w" in all|none) ;; *) printf '%s' "$G" | jq -e --arg id "$w" '.data[] | select(.id==$id)' >/dev/null || { echo "unknown agent group '$w' — see: ncl groups list" >&2; exit 1; }; esac; done; printf '%s\n' "$A"
 ```
 
 ## Scope it to the chosen agents
@@ -107,7 +107,7 @@ missing ones now, exactly as the runtime would (secret mode `all`, nothing else
 touched):
 
 ```nc:run effect:wire
-G=$(ncl groups list --json) || { echo "could not list agent groups — is the NanoClaw host running?" >&2; exit 1; }; AG=$(onecli agents list) || { echo "could not list OneCLI agents" >&2; exit 1; }; printf '%s' "$G" | jq -r '.data[] | "\(.id)\t\(.name)"' | while IFS="$(printf '\t')" read -r gid gname; do printf '%s' "$AG" | jq -e --arg g "$gid" '.data[] | select(.identifier==$g)' >/dev/null || onecli agents create --name "$gname" --identifier "$gid" >/dev/null || { echo "could not create an OneCLI agent for $gname ($gid)" >&2; exit 1; }; done
+G=$(ncl groups list --json --limit 100000) || { echo "could not list agent groups — is the NanoClaw host running?" >&2; exit 1; }; AG=$(onecli agents list) || { echo "could not list OneCLI agents" >&2; exit 1; }; printf '%s' "$G" | jq -r '.data[] | "\(.id)\t\(.name)"' | while IFS="$(printf '\t')" read -r gid gname; do printf '%s' "$AG" | jq -e --arg g "$gid" '.data[] | select(.identifier==$g)' >/dev/null || onecli agents create --name "$gname" --identifier "$gid" >/dev/null || { echo "could not create an OneCLI agent for $gname ($gid)" >&2; exit 1; }; done
 ```
 
 ### Set the policy
@@ -122,16 +122,17 @@ no policy commands, so the script calls the policy API of the gateway the CLI is
 configured for, with the CLI's own key. It deletes and recreates the rule on
 every run, together with any `Dial: blocked for <group>` rule a legacy block was
 migrated to, publishes the policy, and reads the published generation back. An
-operator's own rules are left alone and keep their place ahead of ours, so an
-operator allow on the Dial host would win: the script stops before writing
-anything and names that rule. Agents another NanoClaw install on the same
+block is moved to the top of the order, so under first-match no operator allow
+can let a blocked agent through; the operator's own rules keep their relative
+order and are otherwise left alone. Agents another NanoClaw install on the same
 gateway blocked stay blocked. Publishing applies the whole policy draft, so
 finish or discard any edit left open in the OneCLI console first. The
 policy lands before any Dial sign-in or key write, and the credential step
 below depends on this capture, so the key can never exist without the block.
 The capture is ids and the word `published` only (names stay on stderr), since
-it is interpolated into that step. A `403 blocked_by_policy` in a container
-means "not chosen", not "broken":
+it is interpolated into that step. If this step fails, show the message and
+stop; do not write the Dial key by hand. A `403 blocked_by_policy` in a
+container means "not chosen", not "broken":
 
 ```nc:run capture:dial_policy validate:^((allowed|blocked):ag-[A-Za-z0-9-]+\n)*published$ effect:wire
 pnpm exec tsx .claude/skills/add-dial-tool/scripts/dial-policy.ts scope --agents {{dial_scope}}
@@ -259,7 +260,7 @@ off from every credential not on its list. Blocked agents keep their lists
 untouched in either mode; the policy alone blocks:
 
 ```nc:run effect:wire
-A=$(printf '%s' '{{dial_scope}}' | tr -d ' '); case ",$A," in *,all,*) A=$(ncl groups list --json | jq -r '[.data[].id] | join(",")');; esac; S=$(onecli secrets list | jq -r 'first(.data[] | select(.name | test("(?i)dial"))) | .id // empty'); [ -n "$S" ] || { echo "no Dial secret in the OneCLI vault — the credential step above did not complete" >&2; exit 1; }; onecli agents list | jq -r '.data[] | select(.secretMode=="selective") | "\(.id)\t\(.identifier)"' | while IFS="$(printf '\t')" read -r aid gid; do case ",$A," in *,"$gid",*) onecli agents set-secrets --id "$aid" --secret-ids "$(onecli agents secrets --id "$aid" | jq -r --arg s "$S" '[.data[], $s] | unique | join(",")')" >/dev/null || { echo "could not add the Dial secret to $gid" >&2; exit 1; }; echo "Dial secret added to the list of $gid";; esac; done
+A=$(printf '%s' '{{dial_scope}}' | tr -d ' '); case ",$A," in *,all,*) A=$(ncl groups list --json --limit 100000 | jq -r '[.data[].id] | join(",")');; esac; S=$(onecli secrets list | jq -r 'first(.data[] | select(.name | test("(?i)dial"))) | .id // empty'); [ -n "$S" ] || { echo "no Dial secret in the OneCLI vault — the credential step above did not complete" >&2; exit 1; }; onecli agents list | jq -r '.data[] | select(.secretMode=="selective") | "\(.id)\t\(.identifier)"' | while IFS="$(printf '\t')" read -r aid gid; do case ",$A," in *,"$gid",*) onecli agents set-secrets --id "$aid" --secret-ids "$(onecli agents secrets --id "$aid" | jq -r --arg s "$S" '[.data[], $s] | unique | join(",")')" >/dev/null || { echo "could not add the Dial secret to $gid" >&2; exit 1; }; echo "Dial secret added to the list of $gid";; esac; done
 ```
 
 ## Hand the tool to running agents
@@ -274,7 +275,7 @@ fire after an earlier step bounced — agents keep the image they have until the
 gap above is fixed and the skill is re-applied:
 
 ```nc:run effect:restart
-ncl groups list --json | jq -r '.data[].id' | while read -r gid; do ncl groups restart --id "$gid" >/dev/null || { echo "could not restart $gid" >&2; exit 1; }; done
+ncl groups list --json --limit 100000 | jq -r '.data[].id' | while read -r gid; do ncl groups restart --id "$gid" >/dev/null || { echo "could not restart $gid" >&2; exit 1; }; done
 ```
 
 ## Done
@@ -313,9 +314,9 @@ key the host is signed in with.
 (a new OneCLI agent starts in `all` mode and is not in the block). Re-run this
 skill; it only touches its own policy rule.
 
-**`allows api.getdial.ai ahead of the Dial block`.** An operator rule on the
-gateway allows the Dial host, and under first-match it would beat the block.
-Remove it, disable it, or narrow it in the OneCLI console, then re-run.
+**`no published policy yet`.** The gateway's 1.42 migration of this project did
+not publish a policy, so it still runs on legacy rules; publishing now would
+pre-empt that migration. Check the gateway log for `policy-oss-cutover`.
 
 **A blocked agent still reaches Dial on gateway 1.42.** The gateway honours an
 operator kill switch, `POLICY_ENFORCE_V2=0` in its environment, that makes it

@@ -52,6 +52,7 @@ class FakeGateway implements PolicyClient {
   draft: PolicyRule[] = [];
   published: PolicyRule[] = [];
   secrets: Array<{ id: string; name: string; hostPattern: string }> = [];
+  migrated = true;
   calls: string[] = [];
   private seq = 0;
   constructor(
@@ -68,6 +69,15 @@ class FakeGateway implements PolicyClient {
   async listSecrets() {
     this.calls.push('secrets');
     return this.secrets;
+  }
+  async reorder(orderedIds: string[]) {
+    this.calls.push(`reorder ${orderedIds.join(',')}`);
+    const byId = new Map(this.draft.map((r) => [r.id, r]));
+    if (orderedIds.length !== this.draft.length || orderedIds.some((id) => !byId.has(id))) throw new Error('409');
+    this.draft = orderedIds.map((id, i) => ({ ...byId.get(id)!, priority: i + 1 }));
+  }
+  async cutOver() {
+    return this.migrated;
   }
   async listRules(status: 'draft' | 'published') {
     this.calls.push(`list ${status}`);
@@ -140,6 +150,12 @@ describe('dial-policy: scoping through the v2 policy API', () => {
     const fresh = new FakeGateway();
     await scopeDial(fresh, parseScope('none'), []);
     expect(liveDial(fresh).map(ids)).toEqual([[]]);
+    // Even when another install's block names agents: everyone still means everyone.
+    const shared = new FakeGateway(AGENTS, [
+      rule({ id: 'theirs', logicalId: 't', identities: [{ type: 'agent', id: 'oc-foreign' }] }),
+    ]);
+    await scopeDial(shared, parseScope('none'), []);
+    expect(liveDial(shared).map(ids)).toEqual([[]]);
   });
 
   it('the first-agent onboarding path (`all` before any group exists) writes nothing that would block it', async () => {
@@ -161,17 +177,24 @@ describe('dial-policy: scoping through the v2 policy API', () => {
     ]);
     await scopeDial(gw, parseScope('ag-sales'), GROUPS);
     expect(gw.calls.filter((c) => c.startsWith('delete')).sort()).toEqual(['delete migrated', 'delete old']);
+    // The new block is created before the old ones go: the draft never lacks one.
+    const writes = gw.calls.filter((c) => c.startsWith('create') || c.startsWith('delete'));
+    expect(writes[0]).toMatch(/^create/);
     expect(liveDial(gw).map((r) => [r.name, ids(r)])).toEqual([[BLOCK_RULE, ['oc-support']]]);
   });
 
-  it('splits more than 100 blocked agents over several rules', async () => {
-    const many = Array.from({ length: 130 }, (_, i) => ({ id: `ag-${i}`, name: `G${i}` }));
-    const agents = many.map((g) => ({ id: `oc-${g.id}`, identifier: g.id, name: g.name }));
-    const gw = new FakeGateway(agents);
-    await scopeDial(gw, parseScope('ag-0'), many);
-    const live = liveDial(gw);
-    expect(live.map((r) => r.identities.length)).toEqual([100, 29]);
-    expect(live.every((r) => r.name === BLOCK_RULE)).toBe(true);
+  it("refuses more than 100 blocked agents (one rule, OneCLI's cap) before writing", async () => {
+    const many = Array.from({ length: 102 }, (_, i) => ({ id: `ag-${i}`, name: `G${i}` }));
+    const gw = new FakeGateway(many.map((g) => ({ id: `oc-${g.id}`, identifier: g.id, name: g.name })));
+    await expect(scopeDial(gw, parseScope('ag-0'), many)).rejects.toThrow(/more than 100 agents to block/);
+    expect(gw.calls.some((c) => c.startsWith('create') || c === 'publish')).toBe(false);
+  });
+
+  it('stops before writing when the project has no published policy yet (1.42 cutover did not run)', async () => {
+    const gw = new FakeGateway();
+    gw.migrated = false;
+    await expect(scopeDial(gw, parseScope('ag-sales'), GROUPS)).rejects.toThrow(/no published policy yet/);
+    expect(gw.calls.some((c) => c.startsWith('create') || c.startsWith('delete') || c === 'publish')).toBe(false);
   });
 
   it("leaves an operator's own rules alone, Dial-named or not", async () => {
@@ -196,67 +219,18 @@ describe('dial-policy: scoping through the v2 policy API', () => {
     const gw = new FakeGateway(AGENTS, ops);
     await scopeDial(gw, parseScope('ag-sales'), GROUPS);
     expect(gw.calls.some((c) => c.startsWith('delete'))).toBe(false);
-    expect(gw.published.map((r) => r.id)).toEqual(['op-1', 'op-2', 'op-3', 'op-4', 'r1']);
-  });
-
-  it('stops before writing when an operator allow on the Dial host would win first-match', async () => {
-    for (const host of [DIAL_HOST, '*.getdial.ai', 'api.*', '*']) {
-      const gw = new FakeGateway(AGENTS, [
-        rule({
-          id: 'op',
-          logicalId: 'o',
-          name: 'dial ok',
-          action: 'allow',
-          targets: [{ kind: 'network', hostPattern: host }],
-        }),
-      ]);
-      await expect(scopeDial(gw, parseScope('ag-sales'), GROUPS)).rejects.toThrow(
-        /"dial ok" allows api\.getdial\.ai ahead of the Dial block/,
-      );
-      expect(gw.calls.some((c) => c.startsWith('create') || c.startsWith('delete') || c === 'publish')).toBe(false);
-    }
-    // A secret target reaches the Dial host too: every project secret, or the Dial key by id.
-    for (const target of [
-      { kind: 'secret', secretScope: 'project' },
-      { kind: 'secret', secretId: 'sec-dial' },
-    ]) {
-      const gw = new FakeGateway(AGENTS, [
-        rule({ id: 'op', logicalId: 'o', name: 'dial ok', action: 'allow', targets: [target] }),
-      ]);
-      gw.secrets = [{ id: 'sec-dial', name: 'Dial API', hostPattern: DIAL_HOST }];
-      await expect(scopeDial(gw, parseScope('ag-sales'), GROUPS)).rejects.toThrow(/"dial ok" allows/);
-    }
-    // A disabled one, one on another host or secret, or a derived equipment row does not count.
-    const fine = new FakeGateway(AGENTS, [
-      rule({ id: 'a', logicalId: 'a', name: 'off', action: 'allow', enabled: false }),
-      rule({
-        id: 'c',
-        logicalId: 'c',
-        name: 'other key',
-        action: 'allow',
-        priority: 3,
-        targets: [{ kind: 'secret', secretId: 'sec-other' }],
-      }),
-      rule({
-        id: 'd',
-        logicalId: 'd',
-        name: 'equipment',
-        action: 'allow',
-        priority: 4,
-        source: 'equipment',
-        targets: [{ kind: 'secret', secretScope: 'project' }],
-      }),
-      rule({
-        id: 'b',
-        logicalId: 'b',
-        name: 'elsewhere',
-        action: 'allow',
-        priority: 2,
-        targets: [{ kind: 'network', hostPattern: 'getdial.ai' }],
-      }),
+    // The block goes first so an operator allow on the host cannot beat it; the rest keep their order.
+    expect([...gw.published].sort((a, b) => a.priority - b.priority).map((r) => r.id)).toEqual([
+      'r1',
+      'op-1',
+      'op-2',
+      'op-3',
+      'op-4',
     ]);
-    await scopeDial(fine, parseScope('ag-sales'), GROUPS);
-    expect(fine.calls).toContain('publish');
+    // `all` writes no rule and reorders nothing.
+    const all = new FakeGateway(AGENTS, ops);
+    await scopeDial(all, parseScope('all'), GROUPS);
+    expect(all.calls.some((c) => c.startsWith('reorder'))).toBe(false);
   });
 
   it('keeps agents blocked by another NanoClaw install on the same gateway', async () => {
@@ -304,13 +278,13 @@ describe('dial-policy: scoping through the v2 policy API', () => {
     off.publish = async () => {
       off.published = off.draft.map((r) => ({ ...r, enabled: false }));
     };
-    await expect(scopeDial(off, parseScope('none'), GROUPS)).rejects.toThrow(/stale or disabled/);
+    await expect(scopeDial(off, parseScope('none'), GROUPS)).rejects.toThrow(/does not block exactly/);
     // A block that lost its identities would block everyone: reported, not accepted.
     const widened = new FakeGateway();
     widened.publish = async () => {
       widened.published = [...widened.draft, rule({ id: 'extra', logicalId: 'le', priority: 50 })];
     };
-    await expect(scopeDial(widened, parseScope('ag-sales'), GROUPS)).rejects.toThrow(/different set of agents/);
+    await expect(scopeDial(widened, parseScope('ag-sales'), GROUPS)).rejects.toThrow(/does not block exactly/);
   });
 
   it('parses the selection the way the prompt validates it', () => {
@@ -338,20 +312,11 @@ describe('dial-policy: removal', () => {
     expect(empty.calls).not.toContain('publish');
   });
 
-  it('refuses while a Dial secret is still in the vault, also one written while it runs', async () => {
+  it('refuses while a Dial secret is still in the vault', async () => {
     const gw = new FakeGateway(AGENTS, [rule({ id: 'b', logicalId: 'lb' })]);
     gw.secrets = [{ id: 's', name: 'Dial API', hostPattern: DIAL_HOST }];
     await expect(removeDial(gw)).rejects.toThrow(/still holds a Dial secret \(Dial API\)/);
     expect(gw.calls.some((c) => c.startsWith('delete') || c === 'publish')).toBe(false);
-
-    const race = new FakeGateway(AGENTS, [rule({ id: 'b', logicalId: 'lb' })]);
-    const del = race.deleteRule.bind(race);
-    race.deleteRule = async (id) => {
-      await del(id);
-      race.secrets = [{ id: 's', name: 'Dial API', hostPattern: DIAL_HOST }];
-    };
-    await expect(removeDial(race)).rejects.toThrow(/still holds a Dial secret/);
-    expect(race.calls).not.toContain('publish');
   });
 });
 
@@ -361,8 +326,11 @@ describe('dial-policy: the HTTP client', () => {
     const transport = vi.fn(async (url: string, init: RequestInit) => {
       seen.push([url, init]);
       if (init.method === 'DELETE') return new Response(null, { status: 204 });
+      if (init.method === 'PUT') return new Response('[]');
       if (url.endsWith('/v1/policy/publish')) return new Response('{"generation":2,"ruleCount":3}');
       if (url.includes('/v1/policy/rules?status=')) return new Response('[]');
+      if (url.includes('/v1/policy/default?status=published'))
+        return new Response('{"id":"d1","isDefault":true,"action":"allow"}');
       if (url.endsWith('/v1/secrets')) {
         return new Response('[{"id":"s","name":"Dial API","hostPattern":"api.getdial.ai","valuePreview":"x"}]');
       }
@@ -377,6 +345,8 @@ describe('dial-policy: the HTTP client', () => {
     const client = createPolicyClient('http://gw.test:10254/', 'oc_key', transport as unknown as typeof fetch);
     expect(await client.listAgents()).toEqual([{ id: 'oc-1', identifier: 'ag-1', name: 'One' }]);
     expect(await client.listRules('published')).toEqual([]);
+    expect(await client.cutOver()).toBe(true);
+    await client.reorder(['a', 'b']);
     expect(await client.listSecrets()).toEqual([{ id: 's', name: 'Dial API', hostPattern: 'api.getdial.ai' }]);
     await client.deleteRule('r/1');
     await client.publish();
@@ -385,6 +355,8 @@ describe('dial-policy: the HTTP client', () => {
     expect(seen.map(([u, i]) => `${i.method} ${u}`)).toEqual([
       'GET http://gw.test:10254/v1/agents',
       'GET http://gw.test:10254/v1/policy/rules?status=published',
+      'GET http://gw.test:10254/v1/policy/default?status=published',
+      'PUT http://gw.test:10254/v1/policy/rules/order',
       'GET http://gw.test:10254/v1/secrets',
       'DELETE http://gw.test:10254/v1/policy/rules/r%2F1',
       'POST http://gw.test:10254/v1/policy/publish',
@@ -392,7 +364,8 @@ describe('dial-policy: the HTTP client', () => {
       'POST http://gw.test:10254/v1/policy/rules',
     ]);
     for (const [, init] of seen) expect((init.headers as Record<string, string>).Authorization).toBe('Bearer oc_key');
-    expect((seen[5][1].headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect((seen[7][1].headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(seen[3][1].body).toBe('{"orderedIds":["a","b"]}');
   });
 
   it('goes without a key when the CLI has none, and rejects a bad host', async () => {
@@ -431,6 +404,13 @@ describe('dial-policy: the command', () => {
           res.end(v === undefined ? undefined : JSON.stringify(v));
         };
         if (req.url === '/v1/agents') return json(200, AGENTS);
+        if (req.method === 'PUT' && req.url === '/v1/policy/rules/order') {
+          const { orderedIds } = JSON.parse(body) as { orderedIds: string[] };
+          draft = orderedIds.map((id, i) => ({ ...draft.find((r) => r.id === id)!, priority: i + 1 }));
+          return json(200, draft);
+        }
+        if (req.url === '/v1/policy/default?status=published')
+          return json(200, { id: 'd1', isDefault: true, action: 'allow' });
         if (req.url === '/v1/secrets') return json(200, secrets);
         if (req.url === '/v1/policy/rules?status=draft') return json(200, draft);
         if (req.url === '/v1/policy/rules?status=published') return json(200, published);
