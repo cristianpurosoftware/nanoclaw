@@ -77,7 +77,9 @@ export const LINK_ACTION_SCHEMA = Object.freeze({
     // with `new URL()` before validation (see normalizeLinkUrl).
     url: {
       type: 'string' as const,
-      pattern: '^[hH][tT][tT][pP][sS]?://[!$-.0->@-[\\]-~][!#-[\\]-~]*$',
+      // ponytail: DeepSeek (OpenCode Go) rejects the bracket-heavy class above as "not a regex"
+      // and fails every request carrying this tool; printable ASCII keeps the no-whitespace guarantee.
+      pattern: '^[hH][tT][tT][pP][sS]?://[!-~]+$',
       description: "Web link (http or https), e.g. 'https://example.com'.",
     },
     style: {

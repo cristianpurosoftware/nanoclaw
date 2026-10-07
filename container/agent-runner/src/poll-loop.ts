@@ -784,6 +784,9 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * self-addressed failure chain stops after one notice.
  */
 function sendsFailureNotice(routing: RoutingContext): boolean {
+  // ponytail: on WhatsApp the agent is "one of the group" — a technical failure notice
+  // breaks character, so failures stay in the logs and the agent just stays quiet.
+  if (routing.channelType === 'whatsapp') return false;
   return !routing.taskRun && !!routing.platformId && !!routing.channelType && !routing.failureNoticeWake;
 }
 

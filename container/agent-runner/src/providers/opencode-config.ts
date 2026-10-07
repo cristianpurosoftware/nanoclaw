@@ -116,7 +116,14 @@ export function resolveOpenCodeInference(
       // documented OpenRouter config) ship their own native ai-sdk
       // package and must keep OpenCode's default transport resolution.
       ...(provider === 'openai' && proxyUrl ? { npm: '@ai-sdk/openai-compatible' } : {}),
-      options: { apiKey: OPENCODE_CREDENTIAL_PLACEHOLDER, ...(proxyUrl ? { baseURL: proxyUrl } : {}) },
+      // A stalled upstream stream (seen with deepseek-v4.1-flash on OpenCode Go) otherwise
+      // hangs the turn for OpenCode's 5-minute default; fail fast instead.
+      options: {
+        apiKey: OPENCODE_CREDENTIAL_PLACEHOLDER,
+        timeout: 180_000,
+        chunkTimeout: 90_000,
+        ...(proxyUrl ? { baseURL: proxyUrl } : {}),
+      },
       ...(modelsToRegister.length > 0
         ? {
             models: Object.fromEntries(

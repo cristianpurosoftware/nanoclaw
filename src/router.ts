@@ -31,6 +31,7 @@ import { findSessionForAgent } from './db/sessions.js';
 import { backfillSession, fanInboundMessage } from './modules/cross-session-context/index.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
+import { jevGateEnabled, jevShouldEngage, noteInbound } from './jev-gate.js';
 import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
 import { requestWake } from './request-wake.js';
 import { getSession } from './db/sessions.js';
@@ -200,7 +201,10 @@ function dispatchSessionCreated(event: SessionCreatedEvent): void {
   }
 }
 
-function safeParseContent(raw: string): { text?: string; sender?: string; senderId?: string } {
+const WAKE_DEBOUNCE_MS = 7000; // ponytail: fixed quiet window, tune if replies feel slow
+const pendingWakes = new Map<string, ReturnType<typeof setTimeout>>();
+
+function safeParseContent(raw: string): { text?: string; sender?: string; senderId?: string; senderName?: string; attachments?: { type?: string }[] } {
   try {
     return JSON.parse(raw);
   } catch {
@@ -367,6 +371,13 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   const channelDefaults = getChannelDefaults(mg.instance ?? mg.channel_type, mg.channel_type);
   const supportsThreads = adapter?.supportsThreads === true;
 
+  const jevGate = mg.is_group === 1 && jevGateEnabled();
+  if (jevGate) {
+    const kinds = (parsed.attachments ?? []).map((a: { type?: string }) => `[${a.type ?? 'archivo'}]`).join(' ');
+    noteInbound(event.platformId, parsed.senderName ?? parsed.sender ?? 'alguien', `${kinds} ${messageText}`.trim());
+  }
+  let jevVerdict: Promise<boolean> | undefined;
+
   let engagedCount = 0;
   let accumulatedCount = 0;
   let subscribed = false;
@@ -390,7 +401,10 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
     );
     const effectiveThreadId = threadsEnabled ? event.threadId : null;
 
-    const engages = await evaluateEngage(agent, messageText, isMention, mg, effectiveThreadId);
+    const engages =
+      jevGate && agent.engage_mode === 'pattern'
+        ? await (jevVerdict ??= jevShouldEngage(event.platformId))
+        : await evaluateEngage(agent, messageText, isMention, mg, effectiveThreadId);
 
     const accessOk = engages && (!accessGate || (await accessGate(event, userId, mg, agent.agent_group_id)).allowed);
     const scopeOk = engages && (!senderScopeGate || (await senderScopeGate(event, userId, mg, agent)).allowed);
@@ -640,14 +654,23 @@ async function deliverToAgent(
       effectiveThreadId,
       mg.instance,
     );
-    const freshSession = await getSession(session.id);
-    if (freshSession) {
-      const woke = await requestWake(freshSession, 'inbound-message');
-      // requestWake never throws — it returns false on transient spawn
-      // failure (host-sweep retries). Stop the typing indicator we just
-      // started so it doesn't leak; the inbound row stays pending.
-      if (!woke) stopTypingRefresh(freshSession.id);
-    }
+    // Debounce: a burst of messages wakes the agent once, after the chat goes
+    // quiet, so it answers the whole burst with a single reply.
+    clearTimeout(pendingWakes.get(session.id));
+    pendingWakes.set(
+      session.id,
+      setTimeout(async () => {
+        pendingWakes.delete(session.id);
+        const freshSession = await getSession(session.id);
+        if (freshSession) {
+          const woke = await requestWake(freshSession, 'inbound-message');
+          // requestWake never throws — it returns false on transient spawn
+          // failure (host-sweep retries). Stop the typing indicator we just
+          // started so it doesn't leak; the inbound row stays pending.
+          if (!woke) stopTypingRefresh(freshSession.id);
+        }
+      }, event.channelType === 'cli' ? 0 : WAKE_DEBOUNCE_MS),
+    );
 
     // Cross-session context: fan the triggering message into the
     // conversation's recently active sibling sessions as trigger=0

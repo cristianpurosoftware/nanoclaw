@@ -202,7 +202,8 @@ export const addReaction: McpToolDefinition = {
       type: 'object' as const,
       properties: {
         messageId: { type: 'integer', description: 'Message ID (the numeric id shown in messages)' },
-        emoji: { type: 'string', description: 'Emoji name (e.g., thumbs_up, heart, check)' },
+        // ponytail: WhatsApp-only install — WhatsApp wants the real character; Slack-style shortcodes would need a map
+        emoji: { type: 'string', description: 'The emoji character itself (e.g., 😂, 💀, 🍻)' },
       },
       required: ['messageId', 'emoji'],
     },
@@ -235,4 +236,46 @@ export const addReaction: McpToolDefinition = {
   },
 };
 
-registerTools([sendMessage, sendFile, editMessage, addReaction]);
+export const replyToMessage: McpToolDefinition = {
+  tool: {
+    name: 'reply_to_message',
+    description:
+      'Reply quoting a specific message (WhatsApp shows it as a reply to that message). Use instead of plain output when you answer someone in particular.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        messageId: { type: 'integer', description: 'Message ID to quote (the numeric id shown in messages)' },
+        text: { type: 'string', description: 'Reply text' },
+      },
+      required: ['messageId', 'text'],
+    },
+  },
+  async handler(args) {
+    const seq = Number(args.messageId);
+    const text = args.text as string;
+    if (!seq || !text) return err('messageId and text are required');
+
+    const platformId = getMessageIdBySeq(seq);
+    if (!platformId) return err(`Message #${seq} not found`);
+
+    const routing = getRoutingBySeq(seq);
+    if (!routing || !routing.channel_type || !routing.platform_id) {
+      return err(`Cannot determine destination for message #${seq}`);
+    }
+
+    await writeMessageOut({
+      id: generateId(),
+      in_reply_to: getCurrentInReplyTo(),
+      kind: 'chat',
+      platform_id: routing.platform_id,
+      channel_type: routing.channel_type,
+      thread_id: routing.thread_id,
+      content: JSON.stringify({ operation: 'reply', messageId: platformId, text }),
+    });
+
+    log(`reply_to_message: #${seq}`);
+    return ok(`Reply queued for #${seq}`);
+  },
+};
+
+registerTools([sendMessage, sendFile, editMessage, addReaction, replyToMessage]);

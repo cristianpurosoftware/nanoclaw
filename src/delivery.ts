@@ -31,6 +31,7 @@ import { isUnguarded, type Unguarded } from './guard/index.js';
 import { mapConcurrent } from './concurrency.js';
 import { fanOutboundMessage } from './modules/cross-session-context/index.js';
 import { log } from './log.js';
+import { noteOutbound } from './jev-gate.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, readOutboxFiles, withExistingMailboxSession } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
@@ -551,6 +552,7 @@ async function deliverMessage(
     fileCount: files?.length,
   });
 
+  noteOutbound(msg.platformId, typeof content.text === 'string' ? content.text : files?.length ? '[sticker/archivo]' : '');
   clearOutbox(session.agent_group_id, session.id, msg.id);
 
   return platformMsgId;

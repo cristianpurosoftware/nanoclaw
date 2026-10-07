@@ -342,11 +342,35 @@ export function appendMediaFailureNote(content: string, failures: string[]): str
 
 /** Map file extension to Baileys media message type. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// ponytail: hand-picked shortcodes the agent actually uses; unknown words are dropped, not sent as □
+const EMOJI_SHORTCODES: Record<string, string> = {
+  joy: '😂', rofl: '🤣', laughing: '😆', grin: '😁', sweat_smile: '😅', skull: '💀', beers: '🍻', beer: '🍺',
+  fire: '🔥', heart: '❤️', thumbs_up: '👍', thumbsup: '👍', '+1': '👍', thumbs_down: '👎', thumbsdown: '👎',
+  '-1': '👎', clap: '👏', eyes: '👀', sob: '😭', cry: '😢', rage: '😡', angry: '😠', poop: '💩', hankey: '💩',
+  clown: '🤡', clown_face: '🤡', smirk: '😏', thinking: '🤔', thinking_face: '🤔', ok_hand: '👌', pray: '🙏',
+  '100': '💯', facepalm: '🤦', face_palm: '🤦', middle_finger: '🖕', rolling_eyes: '🙄', scream: '😱',
+  flushed: '😳', white_check_mark: '✅', check: '✅', x: '❌', tada: '🎉', party: '🎉', goat: '🐐',
+  chicken: '🐔', pig: '🐷', see_no_evil: '🙈', muscle: '💪', sunglasses: '😎', wink: '😉', heart_eyes: '😍',
+};
+
+/** Normalize an agent-chosen reaction to a real emoji, or undefined if it is an unknown word. */
+export function toReactionEmoji(raw: string): string | undefined {
+  const name = raw.trim().replace(/^:|:$/g, '').toLowerCase();
+  if (!/^[a-z0-9_+-]+$/.test(name)) return raw.trim();
+  return EMOJI_SHORTCODES[name];
+}
+
+/** How long to show "escribiendo…" before a text goes out: roughly human typing, capped. */
+function typingDelayMs(text: string): number {
+  return Math.min(5000, 700 + text.length * 35);
+}
+
 function buildMediaMessage(data: Buffer, filename: string, ext: string, caption?: string): any {
   const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
   const videoExts = ['.mp4', '.mov', '.avi', '.mkv'];
   const audioExts = ['.mp3', '.ogg', '.m4a', '.wav', '.aac', '.opus'];
 
+  if (ext === '.webp') return { sticker: data };
   if (imageExts.includes(ext)) {
     return { image: data, caption, mimetype: `image/${ext.slice(1) === 'jpg' ? 'jpeg' : ext.slice(1)}` };
   }
@@ -434,6 +458,10 @@ registerChannelAdapter('whatsapp', {
 
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
+    // Recent inbound WAMessages by id, so the agent can quote them or react
+    // in groups (the reaction key needs the original participant).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inboundCache = new Map<string, any>();
 
     // Group metadata cache with TTL
     const groupMetadataCache = new Map<string, { metadata: GroupMetadata; expiresAt: number }>();
@@ -567,22 +595,23 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /** Download media from an inbound message, save to /workspace/attachments/. */
+    /** Download media from an inbound message as inline base64 for the agent inbox. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
       msg: WAMessage,
       normalized: any,
     ): Promise<{
-      attachments: Array<{ type: string; name: string; localPath: string }>;
+      attachments: Array<{ type: string; name: string; localPath: string; data?: string }>;
       failures: string[];
     }> {
       const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
         { key: 'imageMessage', type: 'image', ext: '.jpg' },
+        { key: 'stickerMessage', type: 'sticker', ext: '.webp' },
         { key: 'videoMessage', type: 'video', ext: '.mp4' },
         { key: 'audioMessage', type: 'audio', ext: '.ogg' },
         { key: 'documentMessage', type: 'document', ext: '' },
       ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
+      const results: Array<{ type: string; name: string; localPath: string; data?: string }> = [];
       const failures: string[] = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
@@ -609,11 +638,10 @@ registerChannelAdapter('whatsapp', {
               replacement: filename,
             });
           }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
+          // Inline bytes: the session manager writes them into the agent's
+          // /workspace/inbox. A host-side data/attachments path never reached
+          // the container, so the agent was told about a file it could not read.
+          results.push({ type, name: filename, localPath: '', data: buffer.toString('base64') });
           log.info('Media downloaded', { type, filename });
         } catch (err) {
           log.warn('Failed to download media', { type, err });
@@ -632,7 +660,10 @@ registerChannelAdapter('whatsapp', {
       try {
         const payload: { text: string; mentions?: string[] } = { text };
         if (mentions && mentions.length > 0) payload.mentions = mentions;
+        await sock.sendPresenceUpdate('composing', jid).catch(() => {});
+        await new Promise((r) => setTimeout(r, typingDelayMs(text)));
         const sent = await sock.sendMessage(jid, payload);
+        await sock.sendPresenceUpdate('paused', jid).catch(() => {});
         if (sent?.key?.id && sent.message) {
           sentMessageCache.set(sent.key.id, sent.message);
           if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
@@ -919,6 +950,31 @@ registerChannelAdapter('whatsapp', {
                   !hasMentionPills(normalized) &&
                   isBotTypedMention(content, ASSISTANT_NAME, botPhoneJid)));
 
+            if (msg.key.id) {
+              inboundCache.set(msg.key.id, msg);
+              if (inboundCache.size > SENT_MESSAGE_CACHE_MAX) inboundCache.delete(inboundCache.keys().next().value!);
+            }
+            const quoteCtx = (
+              normalized.extendedTextMessage ??
+              normalized.imageMessage ??
+              normalized.videoMessage ??
+              normalized.audioMessage ??
+              normalized.stickerMessage
+            )?.contextInfo;
+            if (quoteCtx?.quotedMessage) {
+              const q = quoteCtx.quotedMessage;
+              const qText =
+                q.conversation ||
+                q.extendedTextMessage?.text ||
+                q.imageMessage?.caption ||
+                (q.stickerMessage ? '[sticker]' : q.imageMessage ? '[imagen]' : q.audioMessage ? '[audio]' : '[mensaje]');
+              const qUser = String(quoteCtx.participant || '').split('@')[0].split(':')[0];
+              const toBot =
+                (!!botPhoneJid && qUser === botPhoneJid.split('@')[0].split(':')[0]) || (!!botLidUser && qUser === botLidUser);
+              const who = toBot ? `vos (${ASSISTANT_NAME})` : qUser;
+              content = `[respondiendo a ${who}: "${String(qText).slice(0, 200)}"]\n${content}`;
+            }
+
             const inbound: InboundMessage = {
               id: msg.key.id || `wa-${Date.now()}`,
               kind: 'chat',
@@ -1020,17 +1076,42 @@ registerChannelAdapter('whatsapp', {
 
         // Reaction → emoji on a message
         if (content.operation === 'reaction' && content.messageId && content.emoji) {
+          const emoji = toReactionEmoji(content.emoji as string);
+          if (!emoji) {
+            log.warn('Dropping reaction with unknown emoji name', { emoji: content.emoji });
+            return;
+          }
           try {
             await sock.sendMessage(platformId, {
               react: {
-                text: content.emoji as string,
-                key: { remoteJid: platformId, id: content.messageId as string, fromMe: false },
+                text: emoji,
+                key: inboundCache.get(String(content.messageId).split(':')[0])?.key ?? {
+                  remoteJid: platformId,
+                  id: String(content.messageId).split(':')[0],
+                  fromMe: false,
+                },
               },
             });
           } catch (err) {
             log.debug('Failed to send reaction', { platformId, err });
           }
           return;
+        }
+
+        // Reply quoting a specific inbound message
+        if (content.operation === 'reply' && content.messageId && content.text) {
+          const quoted = inboundCache.get(String(content.messageId).split(':')[0]);
+          const { text: replyText, mentions } = formatWhatsApp(content.text as string);
+          await sock.sendPresenceUpdate('composing', platformId).catch(() => {});
+          await new Promise((r) => setTimeout(r, typingDelayMs(replyText)));
+          const sent = await sock.sendMessage(
+            platformId,
+            { text: replyText, ...(mentions.length > 0 && { mentions }) },
+            quoted ? { quoted } : undefined,
+          );
+          await sock.sendPresenceUpdate('paused', platformId).catch(() => {});
+          if (sent?.key?.id && sent.message) sentMessageCache.set(sent.key.id, sent.message);
+          return sent?.key?.id ?? undefined;
         }
 
         // Normal message (with optional file attachments)
@@ -1073,13 +1154,10 @@ registerChannelAdapter('whatsapp', {
         }
       },
 
-      async setTyping(platformId: string) {
-        try {
-          await sock.sendPresenceUpdate('composing', platformId);
-        } catch (err) {
-          log.debug('Failed to update typing status', { jid: platformId, err });
-        }
-      },
+      // No-op on purpose: the generic typing loop shows "escribiendo…" while the
+      // agent thinks, even when it decides to stay silent. Typing is shown only
+      // right before a message actually goes out (sendRawMessage / reply).
+      async setTyping(_platformId: string) {},
 
       async teardown() {
         shuttingDown = true;
