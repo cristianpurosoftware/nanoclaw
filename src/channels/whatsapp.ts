@@ -973,6 +973,16 @@ registerChannelAdapter('whatsapp', {
                 (!!botPhoneJid && qUser === botPhoneJid.split('@')[0].split(':')[0]) || (!!botLidUser && qUser === botLidUser);
               const who = toBot ? `vos (${ASSISTANT_NAME})` : qUser;
               content = `[respondiendo a ${who}: "${String(qText).slice(0, 200)}"]\n${content}`;
+              // Replying to a photo: the agent never saw the original (it may predate
+              // the wiring or have been dropped), so attach the quoted image itself.
+              if (q.imageMessage && quoteCtx.stanzaId) {
+                const quoted = {
+                  key: { remoteJid: chatJid, id: quoteCtx.stanzaId, participant: quoteCtx.participant },
+                  message: { imageMessage: q.imageMessage },
+                } as WAMessage;
+                const got = await downloadInboundMedia(quoted, quoted.message);
+                attachments.push(...got.attachments.map((a) => ({ ...a, name: `citada-${a.name}` })));
+              }
             }
 
             const inbound: InboundMessage = {
